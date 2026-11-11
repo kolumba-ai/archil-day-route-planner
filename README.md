@@ -46,8 +46,8 @@ python3 server.py       # then open http://localhost:8765
 |---|---|
 | `PLANNER_SEARCH=keenable` | Check each venue's hours, location and dog rules with Keenable (keyless works, rate-limited) |
 | `PLANNER_ROUTES=sandboxes` | Run each route branch in its own Archil sandbox (needs `ARCHIL_API_KEY`, `ARCHIL_REGION`, `ARCHIL_DISK_ID`) |
-| `ANTHROPIC_API_KEY` | Use Claude web search to find venues |
-| `OPENAI_API_KEY` | OpenAI (`OPENAI_MODEL`, default `gpt-5.4-mini`) reads chat text: the request, the start reply, plan picks like "the second one"; every field is checked, the rules fill gaps |
+| `ANTHROPIC_API_KEY` | Claude Haiku 5.5 reads chat text: the request, the start reply, plan picks like "the second one"; every field is checked, the rules fill gaps. Also Claude web search for venues when `PLANNER_SEARCH` isn't `keenable` |
+| `OPENAI_API_KEY` | OpenAI (`OPENAI_MODEL`, default `gpt-5.4-mini`) reads chat text when there is no Anthropic key |
 | `OVERPASS_CH_KEY` | Find venues (by cuisine, food trucks) and geocode starts with overpass.ch |
 
 ## Tests

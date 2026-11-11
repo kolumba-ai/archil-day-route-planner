@@ -1,10 +1,11 @@
 """Read what people type in the chat box with OpenAI (or Claude Haiku 5.5), checked against
 the message, with the rule-based parser (planner/request.py) as fallback.
 
-Which model reads the text: PLANNER_PARSER=openai | claude | rules. By default OpenAI when
-OPENAI_API_KEY is set (model OPENAI_MODEL, default gpt-5.4-mini), else Claude when
-ANTHROPIC_API_KEY is set, else the rules. Besides the planning request, OpenAI also reads
-replies: the answer to "Where should we start from?" and picks like "the second one".
+Which model reads the text: PLANNER_PARSER=claude | openai | rules. By default Claude
+(claude-haiku-5-5, CLAUDE_PARSER_MODEL) when ANTHROPIC_API_KEY is set, else OpenAI when
+OPENAI_API_KEY is set (OPENAI_MODEL, default gpt-5.4-mini), else the rules. Besides the planning
+request, the model also reads replies: the answer to "Where should we start from?" and picks
+like "the second one".
 
 The model handles the many ways people phrase things; the rules are instant, free, work
 offline and give the same answer every time (tests use them: PLANNER_PARSER=rules).
@@ -80,7 +81,15 @@ def provider():
         return "claude" if has_claude else "rules"
     if want == "openai":
         return "openai" if has_openai else "rules"
-    return "openai" if has_openai else "claude" if has_claude else "rules"
+    return "claude" if has_claude else "openai" if has_openai else "rules"
+
+
+def claude_model():
+    return os.environ.get("CLAUDE_PARSER_MODEL", "").strip() or MODEL
+
+
+def model_name(who):
+    return {"claude": claude_model(), "openai": openai_model()}.get(who, "rules")
 
 
 def available():
@@ -106,20 +115,35 @@ def ask_openai(system, text, schema, name="fields", timeout=20):
     return json.loads(msg["content"])
 
 
-def ask_claude(text):
+_client = None
+
+
+def ask_claude(text, system=SYSTEM, schema=SCHEMA, timeout=20):
+    """One Messages API call with a JSON schema; returns the parsed object. The SDK reads
+    ANTHROPIC_API_KEY from the environment (.env); the key is never printed."""
+    global _client
     import anthropic
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model=MODEL,
+    if _client is None:
+        _client = anthropic.Anthropic(max_retries=1)
+    resp = _client.messages.create(
+        model=claude_model(),
         max_tokens=2000,
-        system=SYSTEM,
+        system=system,
         messages=[{"role": "user", "content": text}],
-        output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
-        timeout=20,
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        timeout=timeout,
     )
     if resp.stop_reason == "refusal":  # Haiku has no server-side fallback: use the rules
         raise RuntimeError("Claude declined to parse the message")
+    if resp.stop_reason == "max_tokens":
+        raise RuntimeError("Claude's answer was cut off")
     return json.loads(next(b.text for b in resp.content if b.type == "text"))
+
+
+def ask_model(who, system, text, schema, name, timeout=20):
+    if who == "claude":
+        return ask_claude(text, system, schema, timeout)
+    return ask_openai(system, text, schema, name, timeout)
 
 
 def _norm(s):
@@ -185,10 +209,8 @@ def understand(text):
     if who == "rules":
         return dict(base, parsed_by="rules", claude_fields=[], model_fields=[])
     try:
-        ai = ask_openai(SYSTEM, text, SCHEMA, "day_plan_request") if who == "openai" else ask_claude(text)
-        out = merge(text, ai, base, who)
-        if who == "openai":
-            out["parser_model"] = openai_model()
+        out = merge(text, ask_model(who, SYSTEM, text, SCHEMA, "day_plan_request"), base, who)
+        out["parser_model"] = model_name(who)
         return out
     except Exception as e:  # network, refusal, bad JSON: the rules answer
         print("%s parsing failed, using the rules: %r" % (LABEL[who], e))
@@ -205,14 +227,16 @@ REPLY_SCHEMA = {"type": "object", "properties": {"start_place": {"type": "string
 
 
 def read_reply(text, asked):
-    """OpenAI reads a short reply. asked: "start" or "pick (1-3)". Returns the dict or None.
+    """The model reads a short reply. asked: the question they answer. Returns the dict or None.
     The start place must appear in the reply; the plan number is range-checked by the caller."""
-    if provider() != "openai":
+    who = provider()
+    if who == "rules":
         return None
     try:
-        ai = ask_openai(REPLY_SYSTEM, "They were asked: %s\nTheir reply: %s" % (asked, text), REPLY_SCHEMA, "reply", timeout=10)
+        ai = ask_model(who, REPLY_SYSTEM, "They were asked: %s\nTheir reply: %s" % (asked, text), REPLY_SCHEMA,
+                       "reply", timeout=10)
     except Exception as e:
-        print("OpenAI reply reading failed, using the rules: %r" % e)
+        print("%s reply reading failed, using the rules: %r" % (LABEL[who], e))
         return None
     place = (ai.get("start_place") or "").strip()
     if place and _norm(place) not in _norm(text):

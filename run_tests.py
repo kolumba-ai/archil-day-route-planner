@@ -170,8 +170,8 @@ def main():
         if name in ("seed-fallback", "bad-search"):
             env.pop("ANTHROPIC_API_KEY", None)
             env["PLANNER_SEARCH"] = "seed"
-        if name == "live-search" and "--keenable" in sys.argv:
-            env["PLANNER_SEARCH"] = "keenable"
+        if name == "live-search":  # F2 is the one test that searches live
+            env["PLANNER_SEARCH"] = "keenable" if "--keenable" in sys.argv else "claude"
         t0 = time.time()
         try:
             p = subprocess.run([sys.executable, "-m", "tests.scenarios", name], cwd=path, env=env,

@@ -297,7 +297,7 @@ function handle(e) {
       $('backend').textContent += ' · Plans chosen by ' + e.by + (e.note ? ' (' + e.note.slice(0, 60) + ')' : '');
       break;
     case 'request':
-      $('backend').textContent += ' · Request read by ' + (e.parsed_by === 'openai' ? 'OpenAI ' + (e.parser_model || '') : e.parsed_by === 'claude' ? 'Claude Haiku 5.5' : 'rules') +
+      $('backend').textContent += ' · Request read by ' + (e.parsed_by === 'openai' ? 'OpenAI ' + (e.parser_model || '') : e.parsed_by === 'claude' ? 'Claude ' + (e.parser_model || 'Haiku 5.5') : 'rules') +
         (e.parse_error ? ' (model failed: ' + e.parse_error.slice(0, 40) + ')' : '');
       break;
     case 'place': {  // the start is known: move the map there before any route is planned

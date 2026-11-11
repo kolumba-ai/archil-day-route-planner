@@ -414,13 +414,13 @@ def claude_parsing(r):
         if got["parsed_by"] not in ("openai", "claude") or diffs:
             bad.append("%s...: %s %s" % (text[:30], got["parsed_by"], diffs))
     reply = understand.read_reply("let's go with the second one", "Which plan, 1, 2 or 3?")
-    if understand.provider() == "openai" and (reply or {}).get("plan") != 2:
+    if (reply or {}).get("plan") != 2:
         bad.append("pick 'the second one' read as %s" % reply)
     start = understand.read_reply("Let's start at 4055 SE Salmon St please", "Where should we start from?")
-    if understand.provider() == "openai" and "4055 SE Salmon St" not in (start or {}).get("start_place", ""):
+    if "4055 SE Salmon St" not in (start or {}).get("start_place", ""):
         bad.append("start reply read as %s" % start)
-    r.check("L1", "Model parses requests", not bad, "; ".join(bad) or "%s: %d phrasings and 2 replies read correctly"
-            % (understand.LABEL[understand.provider()], len(cases)))
+    r.check("L1", "Model parses requests", not bad, "; ".join(bad) or "%s (%s): %d phrasings and 2 replies read correctly"
+            % (understand.LABEL[understand.provider()], understand.model_name(understand.provider()), len(cases)))
 
 
 def subq_decides(r):
