@@ -7,6 +7,22 @@ A hackathon demo of agents that plan a San Francisco day out for a group (two fr
 - With `PLANNER_ROUTES=sandboxes`, every route branch runs in its own **Archil sandbox** (35 microVMs per request, forked from one base sandbox in about a second).
 - A judge picks up to 3 different plans that leave nobody unhappy; both people vote or ask for changes ("different beach", "less walking").
 
+### How the demo uses disk branching and sandboxes
+
+Each route simulation runs in its own Archil sandbox. The group's preferences are branched out to every sandbox:
+
+1. Everyone's limits and preferences, plus the candidate venues, are written to one base sandbox. That sandbox is then stopped, so it acts as a checkpoint.
+2. The planner forks that base once per simulation (one per museum-and-beach pair). Each fork is a copy-on-write branch of the base's disk, so it starts with all the preferences already in place and nothing is copied.
+3. Each sandbox simulates its routes independently and writes its results only to its own branch. The winning sandboxes are kept as `plan-1` to `plan-3`; the rest are deleted.
+
+The center of the demo has three screens that show this while it runs:
+
+| Screen | Shows |
+|---|---|
+| **Map** | The selected plan's route across San Francisco, with numbered stops and each person's scores and picks |
+| **Routes** | Each plan as a timetable: arrival and departure times, walking or riding between stops, distance, climb, and notes such as dog rules or fog |
+| **Technical** | A live timeline of the disk checkpoints, the search branches, the base sandbox and every route sandbox (fork, then run), with fork times, storage written compared with full copies, and the sandboxes kept as plans |
+
 ## Run it
 
 Python 3.9+ on macOS. No packages to install for the local demo.
