@@ -326,7 +326,7 @@ def finish(run, req, disk, work, chosen):
     run.emit("done", ok=True)
 
 
-# ------------------------------------------------------------------ votes and changes
+# ------------------------------------------------------------------ votes (plans can't be changed)
 
 PHONE = {"Me": "me", "Ana": "ana"}
 
@@ -339,8 +339,8 @@ def vote(run, who, rank):
     run.state["votes"][who] = rank
     run.emit("vote", who=who, rank=rank)
     for other in run.state["voters"]:
-        if other != who:
-            run.say(PHONE[other], "%s prefers plan %d." % (who, rank), agent=True)
+        if other != who:  # "Me" is the person who invited Ana: on Ana's phone that's "Your friend"
+            run.say(PHONE[other], "%s prefers plan %d." % ("Your friend" if who == "Me" else who, rank), agent=True)
     votes = run.state["votes"]
     if len(votes) < len(run.state["voters"]):
         return
@@ -359,66 +359,3 @@ def vote(run, who, rank):
     text = "Decided: plan %d (%s). %s." % (rank, why, " → ".join(s["name"] for s in p["stops"]))
     for v in run.state["voters"]:
         run.say(PHONE[v], text, agent=True)
-
-
-CHANGES = {
-    "swap-cafe": "a different cafe",
-    "swap-museum": "a different museum or outdoor stop",
-    "swap-food": "a different lunch place",
-    "swap-beach": "a different beach",
-    "less-walking": "less walking",
-}
-
-
-def request_change(prev, who, rank, change):
-    """Start a new run that re-plans from the previous run's saved candidates."""
-    if change not in CHANGES or not prev.state.get("plans") or not 1 <= rank <= len(prev.state["plans"]):
-        raise ValueError("invalid change")
-    run = Run(parent=prev.id)
-    RUNS[run.id] = run
-    threading.Thread(target=_safe_replan, args=(run, prev, who, rank, change), daemon=True).start()
-    return run
-
-
-def _safe_replan(run, prev, who, rank, change):
-    try:
-        replan(run, prev, who, rank, change)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        run.say("me", "Something went wrong while re-planning: %s" % e)
-        run.emit("done", ok=False)
-
-
-def replan(run, prev, who, rank, change):
-    import copy
-    req = copy.deepcopy(prev.state["req"])
-    ctx = copy.deepcopy(prev.state["ctx"])
-    cands = copy.deepcopy(prev.state["candidates"])
-    plan_ = prev.state["plans"][rank - 1]
-    note = ""
-    if change.startswith("swap-"):
-        cat = change[5:]
-        old = next(s["name"] for s in plan_["stops"] if s["category"] == cat)
-        cands[cat] = [v for v in cands[cat] if v["name"] != old]
-        note = "without %s" % old
-        if not cands[cat]:
-            run.say(PHONE[who], "There is no other option for that stop.", agent=True)
-            run.emit("done", ok=False)
-            return
-    elif change == "less-walking":
-        ctx["limits"]["max_km"] = max(1.0, round(plan_["walk_km"] * 0.75, 1))
-        note = "walking at most %.1f km" % ctx["limits"]["max_km"]
-    for v in ["Me"] + (["Ana"] if "ana" in req["with"] else []):
-        run.say(PHONE[v], "%s asked for %s on plan %d. Re-planning %s from the saved candidates..."
-                % (who, CHANGES[change], rank, note), agent=True)
-    run.state.update(req=req, ctx=ctx, candidates=cands)
-    root = os.path.join(DATA, "outing-" + run.id)
-    disk = OutingDisk(root, run.emit)
-    run.emit("backend", name=disk.backend.name + (" · routes: one Archil sandbox each"
-                                                  if os.environ.get("PLANNER_ROUTES") == "sandboxes" else ""),
-             search="reused from the previous plan", replan_of=prev.id, change=change)
-    disk.write_json(disk.work, "request.json", req)
-    disk.write_json(disk.work, "candidates.json", cands)
-    disk.checkpoint(disk.work, "candidates")
-    route_and_finish(run, req, disk, ctx, cands)

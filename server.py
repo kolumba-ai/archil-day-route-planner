@@ -15,38 +15,29 @@ os.environ.setdefault("PLANNER_PROFILES_DIR",
 from planner import planner  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
-API_VERSION = 2  # bump when the page needs new endpoints; the page checks it (web/index.html)
+API_VERSION = 3  # bump when the page needs new endpoints; the page checks it (web/index.html)
 PORT = int(os.environ.get("PORT", "8765"))
 
-CHANGE_WORDS = [
-    ("swap-cafe", ("cafe", "coffee", "café")),
-    ("swap-museum", ("museum", "gallery")),
-    ("swap-food", ("burrito", "food", "lunch", "taco", "restaurant")),
-    ("swap-beach", ("beach",)),
-    ("less-walking", ("walk", "shorter", "tired", "far")),
-]
-CHANGE_VERBS = r"\b(swap|change|different|another|other|instead|less|shorter|tired|too far|replace)\b"
-
-
 def interpret(run, who, text):
-    """Turn a typed message into an action: a new plan, a vote, a change, or a hint."""
+    """Turn a typed message into an action: a new plan, a pick (1, 2 or 3), or a hint.
+
+    Plans can't be changed: people only choose one by texting its number.
+    """
     low = text.lower().strip()
     has_plans = run is not None and bool(run.state.get("plans"))
     if who == "Me" and (not has_plans or re.search(r"\bplan (saturday|sunday|a day|my|our)\b", low)):
         return "plan", None
     if not has_plans:
         return "hint", "No plans yet. Ask your friend to start one."
-    m = re.search(r"\bplan\s*([1-3])\b", low) or re.fullmatch(r"([1-3])", low)
-    if re.search(CHANGE_VERBS, low):
-        change = next((c for c, words in CHANGE_WORDS if any(w in low for w in words)), None)
-        if change:
-            # Which plan to change: the one named, else the decided one, else this person's pick.
-            rank = int(m.group(1)) if m else run.state.get("decided") or run.state["votes"].get(who) or 1
-            return "change", (rank, change)
-    if m:
+    n = len(run.state["plans"])
+    nums = [str(i) for i in range(1, n + 1)]
+    choices = nums[0] if n == 1 else ", ".join(nums[:-1]) + " or " + nums[-1]
+    if run.state.get("decided"):
+        return "hint", "Plan %d is already decided." % run.state["decided"]
+    m = re.fullmatch(r"(?:plan\s*)?#?\s*([1-9])\s*[.!]?", low)
+    if m and 1 <= int(m.group(1)) <= n:
         return "vote", int(m.group(1))
-    return "hint", ("Try 'plan 2' to pick a plan, or 'different beach', 'another cafe', "
-                    "'less walking' to change one.")
+    return "hint", "Just reply with the plan number: %s." % choices
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -141,14 +132,6 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, AttributeError) as e:
                 return self._json(400, {"error": str(e)})
             self._json(200, {"ok": True})
-        elif url.path == "/api/change":
-            b = self._body()
-            prev = planner.RUNS.get(b.get("run"))
-            try:
-                run = planner.request_change(prev, b.get("who"), int(b.get("rank", 0)), b.get("change"))
-            except (ValueError, AttributeError) as e:
-                return self._json(400, {"error": str(e)})
-            self._json(200, {"run": run.id})
         elif url.path == "/api/say":
             b = self._body()
             who, text = b.get("who"), (b.get("text") or "").strip()
@@ -162,9 +145,6 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "vote":
                     planner.vote(run, who, arg)
                     return self._json(200, {"action": "vote"})
-                if action == "change":
-                    new = planner.request_change(run, who, arg[0], arg[1])
-                    return self._json(200, {"action": "change", "run": new.id})
             except ValueError as e:
                 return self._json(200, {"action": "hint", "text": "I couldn't do that: %s." % e})
             self._json(200, {"action": "hint", "text": arg})

@@ -17,7 +17,7 @@ You get a JSON list of plans the planner already chose, and who is reading.
 Write the messages as JSON with these fields:
 - "intro": one short opening text, e.g. that you have N options for Saturday.
 - "plans": one text per plan, in the same order as the input.
-- "question": one short closing text asking which plan they want, or whether they'd like a change.
+- "question": one short closing text asking which plan they want, telling them to just reply with its number (for example "Just reply 1, 2 or 3"). Plans can't be changed, so never offer changes or alternatives.
 
 Rules for every text:
 - Keep every fact exactly as given. Never invent places, times or facts. Name every stop of every plan, exactly as written.
@@ -61,8 +61,9 @@ def template(plans, reader):
                                                    p.get("depart", "10:00"))]
         lines += ["%s %s" % (_stop_icon(s), s["name"]) for s in p["stops"]]
         out.append("\n".join(lines))
-    nums = " ".join(NUMBERS[: len(plans)])
-    out.append("Which one do you want? %s Tap your pick below, or ask me for a change (another cafe, beach, less walking...)." % nums)
+    numbers = [str(i) for i in range(1, len(plans) + 1)]
+    reply = numbers[0] if len(numbers) == 1 else ", ".join(numbers[:-1]) + " or " + numbers[-1]
+    out.append("Which one do you want? %s Just reply %s." % (" ".join(NUMBERS[: len(plans)]), reply))
     return out
 
 

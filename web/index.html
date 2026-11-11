@@ -133,19 +133,6 @@
     <div class="seg"><button class="on" data-v="chat">Chat</button><button data-v="limits">My limits</button></div>
     <div class="view on" data-view="chat">
       <div class="msgs"></div>
-      <div class="vote">
-        <div class="row"><span>I prefer:</span>
-          <button class="pick" data-rank="1">Plan 1</button><button class="pick" data-rank="2">Plan 2</button><button class="pick" data-rank="3">Plan 3</button></div>
-        <div class="row">
-          <select class="chg-plan"><option value="1">Plan 1</option><option value="2">Plan 2</option><option value="3">Plan 3</option></select>
-          <select class="chg">
-            <option value="swap-cafe">different cafe</option><option value="swap-museum">different museum</option>
-            <option value="swap-food">different lunch</option><option value="swap-beach">different beach</option>
-            <option value="less-walking">less walking</option>
-          </select>
-          <button class="ask">Ask</button>
-        </div>
-      </div>
       <form class="compose"><textarea rows="4"></textarea><button>Send</button></form>
     </div>
     <div class="view" data-view="limits"><div class="limits"></div></div>
@@ -155,7 +142,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset'},
-                 ana: {who:'Ana', title:"Ana's agent", placeholder:"Type 'plan 2', 'different beach' or 'less walking'"} };
+                 ana: {who:'Ana', title:"Ana's agent", placeholder:"Reply 1, 2 or 3 to pick a plan"} };
 let run = null, es = null, runInfo = {}, events = [], plans = [], votes = {}, decided = null, selected = 0, map, layer;
 
 // ---------------------------------------------------------------- phones
@@ -171,13 +158,6 @@ function buildPhone(id) {
   });
   root.querySelector('form').onsubmit = ev => { ev.preventDefault(); const text = ta.value.trim(); ta.value = ''; send(id, text); };
   ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) root.querySelector('form').requestSubmit(); };
-  root.querySelectorAll('.pick').forEach(b => b.onclick = () =>
-    post('/api/vote', {run, who: cfg.who, rank: +b.dataset.rank}).then(r => r.error && problem(id, r.error)));
-  root.querySelector('.ask').onclick = () => {
-    const rank = +root.querySelector('.chg-plan').value, change = root.querySelector('.chg').value;
-    bubble(id, 'Plan ' + rank + ': ' + root.querySelector('.chg').selectedOptions[0].text, true);
-    post('/api/change', {run, who: cfg.who, rank, change}).then(r => r.error ? problem(id, r.error) : follow(r.run, false));
-  };
 }
 
 function bubble(phone, text, out, opts = {}) {
@@ -217,13 +197,12 @@ async function send(phone, text) {
   const r = await post('/api/say', {run, who: PHONES[phone].who, text});
   if (r.error) problem(phone, r.error);
   else if (r.action === 'plan') follow(r.run, true);
-  else if (r.action === 'change') follow(r.run, false);
   else if (r.action === 'hint') bubble(phone, r.text || 'Not understood.', false);
 }
 
 async function checkServer() {
   const r = await fetch('/api/version').then(x => x.ok ? x.json() : null).catch(() => null);
-  if (!r || r.api < 2) {
+  if (!r || r.api < 3) {
     const b = document.createElement('div');
     b.style.cssText = 'background:#c92a2a;color:#fff;padding:8px 20px;font-weight:600';
     b.textContent = 'The server is older than this page. Stop it (Ctrl+C) and start it again: python3 server.py';
@@ -289,7 +268,6 @@ function follow(id, fresh) {
   if (es) es.close();
   run = id; events = []; plans = []; votes = {}; decided = null; selected = 0;
   runInfo = {fresh};
-  document.querySelectorAll('.vote').forEach(v => { v.classList.remove('on'); v.querySelectorAll('.pick').forEach(b => b.classList.remove('on')); });
   renderPlans(); renderTech();
   es = new EventSource('/api/events?run=' + id);
   es.onmessage = m => handle(JSON.parse(m.data));
@@ -302,16 +280,11 @@ function handle(e) {
                     runInfo.backend = e.name; runInfo.replan = e.replan_of; break;
     case 'message': bubble(e.phone, e.text, false, {ask: e.ask}); break;
     case 'plans': plans = e.plans; selected = 0; renderPlans(); break;
-    case 'vote_open': e.voters.forEach(w => {
-      const v = document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' .vote');
-      v.classList.add('on');
-      v.querySelectorAll('.pick').forEach(b => b.style.display = e.ranks.includes(+b.dataset.rank) ? '' : 'none');
-      v.querySelectorAll('.chg-plan option').forEach(o => o.hidden = !e.ranks.includes(+o.value));
+    case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply 1, 2 or 3
+      document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' textarea').placeholder =
+        'Reply ' + e.ranks.join(', ').replace(/, (\d)$/, ' or $1') + ' to pick a plan';
     }); break;
-    case 'vote':
-      votes[e.who] = e.rank;
-      document.querySelectorAll('#phone-' + (e.who === 'Me' ? 'me' : 'ana') + ' .pick').forEach(b => b.classList.toggle('on', +b.dataset.rank === e.rank));
-      renderPlans(); break;
+    case 'vote': votes[e.who] = e.rank; renderPlans(); break;
     case 'decision': decided = e.rank; selected = e.rank - 1; renderPlans(); break;
   }
   scheduleTech();

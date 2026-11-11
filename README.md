@@ -5,7 +5,7 @@ A hackathon demo of agents that plan a San Francisco day out for a group (two fr
 - Each person keeps their limits (walking, hills, diet, museum time, weather) in their own profile and shares only a summary, with consent.
 - The planner combines everyone's limits, searches for cafes, museums, food and beaches, then forks one branch per museum-and-beach pair to simulate routes: walking time with hills, opening hours, dog rules and the weather at sunset.
 - With `PLANNER_ROUTES=sandboxes`, every route branch runs in its own **Archil sandbox** (35 microVMs per request, forked from one base sandbox in about a second).
-- A judge picks up to 3 different plans that leave nobody unhappy; both people vote or ask for changes ("different beach", "less walking").
+- A judge picks up to 3 different plans that leave nobody unhappy and keep travel time low; each person picks one by texting its number (1, 2 or 3). Plans can't be changed.
 
 ### How the demo uses disk branching and sandboxes
 
@@ -52,7 +52,7 @@ Tests always use fixed seed data and local routes unless a test opts in (F2 live
 
 | Path | What |
 |---|---|
-| `planner/planner.py` | The planning flow: consent, combine, search branches, route branches, judge, votes, changes |
+| `planner/planner.py` | The planning flow: consent, combine, search branches, route branches, judge, votes |
 | `planner/routes.py` | Route simulation and group scoring |
 | `planner/disk.py` | Local copy-on-write and Archil disk branches |
 | `planner/sandbox_routes.py`, `planner/route_worker.py` | Route branches on Archil sandboxes |
