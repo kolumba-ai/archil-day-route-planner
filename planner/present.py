@@ -125,3 +125,18 @@ def messages(plans, reader, body=None):
         except Exception as e:
             print("Claude formatting failed, using the template: %r" % e)
     return template(plans, reader, body), "template"
+
+
+def number(rank):
+    return NUMBERS[rank - 1] if 1 <= rank <= len(NUMBERS) else str(rank)
+
+
+def decision(plan, rank, why, body=None):
+    """The final decision, with the same icons as the plans, plus the reader's own steps."""
+    lines = ["✅ Decided: plan %s (%s)." % (number(rank), why), "🕙 leave at %s" % plan.get("depart", "10:00")]
+    lines += ["%s %s · %s" % (_stop_icon(s), s["name"], s["arrive"]) for s in plan["stops"]]
+    fit = fitness.estimate(plan, body)
+    lines.append("🏁 back by %s · 👟 ~{:,} steps".format(fit["steps"]) % plan.get("end", "")
+                 + (" · 🔥 ~%d kcal" % fit["kcal"] if "kcal" in fit else ""))
+    return "\n".join(lines)
+

@@ -463,7 +463,8 @@ def vote(run, who, rank):
     run.emit("vote", who=who, rank=rank)
     for other in run.state["voters"]:
         if other != who:  # "Me" is the person who invited Ana: on Ana's phone that's "Your friend"
-            run.say(PHONE[other], "%s prefers plan %d." % ("Your friend" if who == "Me" else who, rank), agent=True)
+            run.say(PHONE[other], "👍 %s prefers plan %s." % ("Your friend" if who == "Me" else who,
+                                                              present.number(rank)), agent=True)
     votes = run.state["votes"]
     if len(votes) < len(run.state["voters"]):
         return
@@ -479,6 +480,6 @@ def vote(run, who, rank):
     run.state["decided"] = rank
     p = plans[rank - 1]
     run.emit("decision", rank=rank, why=why)
-    text = "Decided: plan %d (%s). %s." % (rank, why, " → ".join(s["name"] for s in p["stops"]))
     for v in run.state["voters"]:
-        run.say(PHONE[v], text, agent=True)
+        run.say(PHONE[v], present.decision(p, rank, why, load_profile(PHONE[v]).get("body")), agent=True,
+                msg_kind="decision")

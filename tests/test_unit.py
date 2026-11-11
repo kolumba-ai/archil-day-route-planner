@@ -329,6 +329,29 @@ class FitnessTests(unittest.TestCase):
         self.assertNotIn("body", tests_shared_fields())
 
 
+class DecisionMessageTests(unittest.TestCase):
+    """H7: the final decision has the same icons as the plans."""
+
+    def test_H7_decision_has_icons(self):
+        run = planner.Run()
+        plans = [dict(flat_plan(), rank=i, end="12:00", stops=[
+            {"name": "Ritual", "category": "cafe", "arrive": "10:20"},
+            {"name": "Laurelhurst Park", "category": "park", "arrive": "11:00"}]) for i in (1, 2)]
+        for p in plans:
+            p["scores"] = {"Me": 0.8, "Ana": 0.8}
+        run.state.update(plans=plans, votes={}, voters=["Me", "Ana"])
+        planner.vote(run, "Me", 2)
+        planner.vote(run, "Ana", 2)
+        texts = [e["text"] for e in run.events if e["type"] == "message"]
+        decided = [t for t in texts if t.startswith("✅ Decided")]
+        self.assertEqual(len(decided), 2)  # one per phone
+        for t in decided:
+            self.assertIn("☕ Ritual", t)
+            self.assertIn("🌳 Laurelhurst Park", t)
+            self.assertIn("🕙 leave at", t)
+        self.assertTrue(any(t.startswith("👍") for t in texts))
+
+
 def tests_shared_fields():
     from tests.scenarios import SHARED_FIELDS
     return SHARED_FIELDS
