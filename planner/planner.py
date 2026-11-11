@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from . import places, present, routes, search, streets
+from . import decide, fitness, places, present, routes, search, streets
 from . import request as request_mod
 from .disk import OutingDisk
 
@@ -70,8 +70,10 @@ def default_friend(pid, name):
 
 
 def parse_request(text):
-    """City, start, time, walking limit, stop types, who's coming: see planner/request.py."""
-    return request_mod.parse(text)
+    """City, start, times, walking limit, stops, who's coming. Read by Claude Haiku 5.5 when an
+    Anthropic key is set, checked field by field, with the rules as fallback (planner/understand.py)."""
+    from .understand import understand
+    return understand(text)
 
 
 class Run:
@@ -117,6 +119,40 @@ def _safe_plan(run, text):
         run.emit("done", ok=False)
 
 
+DEMO_STARTS = ("noe valley", "noe valley, san francisco", "noe valley sf")
+FAR_FROM_CITY_KM = 30
+
+
+def resolve_start(req):
+    """Find the starting point. Returns (start, conditions or None, problem or None), where
+    problem is (reason, question to ask). Never guesses: a missing, unknown or far-away
+    starting place means asking, not planning."""
+    city = req["city"] or "San Francisco"
+    place = (req["start_place"] or "").strip()
+    if not place:
+        return None, None, ("missing", "Where should we start from? Tell me a place or street address in %s "
+                                       "(for example \"starting at the Ferry Building\"). I'll plan as soon as I know." % city)
+    if not req["city"] and place.lower().rstrip(".") in DEMO_STARTS:
+        return routes.START, None, None  # the built-in San Francisco demo
+    try:
+        start = places.find_start(place, city, city_center_fallback=False)
+    except Exception as e:
+        return None, None, ("lookup_failed", "I couldn't look up %s right now (%s). Please try again in a minute."
+                            % (place, str(e)[:60]))
+    if not start:
+        return None, None, ("not_found", "I couldn't find \"%s\" in %s on the map. Which place do you mean? "
+                                         "A street address or a nearby landmark works." % (place, city))
+    try:
+        center = places.geocode(city)
+    except Exception:  # can't check the distance to the city center: trust the lookup above
+        center = None
+    if center and routes.km(start, center) > FAR_FROM_CITY_KM:
+        return None, None, ("far", "I found \"%s\" at %s, about %d km from %s. Is that the right place? Please "
+                                   "give a more specific place or address." % (
+                                       place, start.get("display", start["name"])[:90], routes.km(start, center), city))
+    return start, None, None
+
+
 def plan(run, text):
     req = parse_request(text)
     root = os.path.join(DATA, "outing-" + run.id)
@@ -125,33 +161,35 @@ def plan(run, text):
     run.emit("backend", name=disk.backend.name + (" · routes: one Archil sandbox each"
                                                   if os.environ.get("PLANNER_ROUTES") == "sandboxes" else ""),
              search=search.provider_label())
-    run.say("me", "On it. Checking %s's weather%s" % (req["day"], " and asking Ana's agent for her limits." if req["with"] else "."),
-            agent=True)
     run.emit("request", **{k: v for k, v in req.items() if k != "text"})
 
-    # Where: the San Francisco demo, or any other city (start place found on OpenStreetMap,
-    # weather and sunset from Open-Meteo).
-    start, conditions = routes.START, None
-    if req["city"] or req["start_place"]:
-        city = req["city"] or "San Francisco"
-        start = places.find_start(req["start_place"], city)
-        if not start:
-            run.say("me", "I couldn't find %s on the map. Try a nearby landmark or street address."
-                    % (req["start_place"] or city), agent=True)
-            run.emit("done", ok=False)
-            return
+    # Where, before anything else: no invitation, search or branch until the starting point
+    # is clear. The San Francisco demo starts at Noe Valley on built-in data; anywhere else the
+    # start is found on OpenStreetMap, with weather and sunset from Open-Meteo.
+    city = req["city"] or "San Francisco"
+    start, conditions, problem = resolve_start(req)
+    if problem:
+        run.state.update(needs_start=True, original=text)
+        run.emit("need_start", reason=problem[0], place=req["start_place"], city=city)
+        run.say("me", problem[1], agent=True)
+        run.emit("done", ok=False, reason="need_start")
+        return
+    if conditions is None and start is not routes.START:
         try:
             conditions = places.conditions(start, req["day"])
         except Exception as e:
             run.say("me", "No weather forecast available (%s); assuming mild weather." % str(e)[:60], agent=True)
             conditions = {"sunset": "17:00", "hourly": {"12": {"all": {"temp_c": 16, "wind_kmh": 10, "fog": False}}}}
-        run.emit("place", city=city, start=start["name"], lat=start["lat"], lon=start["lon"],
-                 sunset=conditions["sunset"], date=conditions.get("date"))
-        run.say("me", "Starting from %s in %s at %s; walking up to %s km%s. Stops: %s." % (
-            start["name"], city, routes.hhmm(req["start_min"]),
-            ("%g" % req["max_walk_km"]) if req["max_walk_km"] else "your usual",
-            ", avoiding hills" if req["avoid_hills"] else "",
-            ", ".join(req["categories"])), agent=True)
+    # The map moves to the start now, before any route is planned.
+    run.emit("place", city=city, start=start["name"], lat=start["lat"], lon=start["lon"],
+             sunset=(conditions or routes.load_conditions())["sunset"], date=(conditions or {}).get("date"))
+    run.say("me", "Starting from %s in %s at %s%s; walking up to %s km%s. Stops: %s. Checking %s's weather%s" % (
+        start["name"], city, routes.hhmm(req["start_min"]),
+        (", finishing by %s" % routes.hhmm(req["end_min"])) if req.get("end_min") else "",
+        ("%g" % req["max_walk_km"]) if req["max_walk_km"] else "your usual",
+        ", avoiding hills" if req["avoid_hills"] else ", with some hills" if req.get("prefer_hills") else "",
+        ", ".join(req["categories"]), req["day"],
+        " and asking Ana's agent for her limits." if req["with"] else "."), agent=True)
 
     # --- Phase 1: gather shards (Ana's comes from her agent, with consent)
     shards = [load_profile("me")]
@@ -181,7 +219,7 @@ def plan(run, text):
             run.emit("shard", owner="Ana", fields=sorted(summary.keys()))
 
     ctx = routes.combine(shards, req, start=start, conditions=conditions)
-    if req["start_place"] and not req["city"]:
+    if start is not routes.START and not req["city"]:
         ctx["city"] = "San Francisco"  # a custom start in the demo city: use real places too
     run.state.update(req=req, ctx=ctx)
     run.emit("combined", limits=ctx["limits"])
@@ -318,10 +356,22 @@ def routes_on_sandboxes(run, ctx, candidates, specs):
     base = len(json.dumps({"ctx": ctx, "candidates": candidates}))
     n = len(out["results"])
     run.emit("storage", branches=n, base_bytes=base, delta_bytes=written, full_copy_bytes=base * n)
-    for i, c in enumerate(out["chosen"], 1):
-        run.emit("checkpoint", name="plan-%d" % i, ms=0, bytes=0, sandbox=c["branch"])
     run.emit("sandbox_timing", kept=out["kept"], **out["timing"])
-    return [(c["branch"], c["plan"]) for c in out["chosen"]]
+    # The decision step chooses from every sandbox's plans. The controller kept the sandboxes of
+    # its own rule-based picks; if a decision model picks differently, say which were kept.
+    pool = [(r["branch"], it) for r in out["results"] if "best" in r for it in r["best"]]
+    chosen = decide_and_record(run, pool, ctx)
+    for i, (name, _) in enumerate(chosen, 1):
+        run.emit("checkpoint", name="plan-%d" % i, ms=0, bytes=0, sandbox=name, kept=name in out["kept"])
+    return chosen
+
+
+def decide_and_record(run, pool, ctx):
+    """Phase 4: the decision step picks up to 3 plans and says why (planner/decide.py)."""
+    chosen, reasons, decided_by, note = decide.decide(pool, ctx, n=3)
+    run.state["reasons"] = reasons
+    run.emit("decided", by=decided_by, reasons=reasons, note=note, candidates=len(pool))
+    return chosen
 
 
 def routes_locally(run, disk, ctx, candidates, specs):
@@ -354,17 +404,27 @@ def routes_locally(run, disk, ctx, candidates, specs):
 
     # --- Phase 4: judge picks 3 different plans
     all_plans = [(name, it) for name, best in results for it in best]
-    chosen = routes.pick_diverse(all_plans, n=3)
+    chosen = decide_and_record(run, all_plans, ctx)
     for i, (name, it) in enumerate(chosen, 1):
         disk.checkpoint(os.path.join(disk.backend.br_dir, name), "plan-%d" % i)
     return chosen
 
 
 def finish(run, req, disk, work, chosen):
-    plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco")
+    reasons = run.state.get("reasons") or []
+    plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco",
+                  steps_typical=fitness.typical_steps(it),  # steps at a typical stride, for shared screens
+                  why=reasons[i - 1] if i <= len(reasons) else "")
              for i, (name, it) in enumerate(chosen, 1)]
     if plans and run.state.get("ctx", {}).get("streets"):
         streets.add_paths(plans, run.state["ctx"]["start"])  # street-following lines for the map
+        straight = sum(1 for p in plans for l in p["legs"] if not l.get("path"))
+        if straight:
+            run.say("me", "The street routing services are busy right now, so the map shows %d of the legs as "
+                          "straight lines. Walking times still use street distances." % straight, agent=True)
+    elif plans and streets.enabled():
+        run.say("me", "Street routing is unavailable right now: the map shows straight lines and walking times "
+                      "are estimates.", agent=True)
     disk.write_json(work, "plans.json", plans)
     run.state.update(plans=plans, votes={})
     run.emit("plans", plans=plans)
@@ -379,7 +439,9 @@ def finish(run, req, disk, work, chosen):
         # Each phone gets its own message, written by Claude when available (both in parallel).
         readers = [("me", "Me")] + ([("ana", "Ana")] if "ana" in req["with"] else [])
         with ThreadPoolExecutor(max_workers=2) as pool:
-            msgs = list(pool.map(lambda r: present.messages(plans, r[1]), readers))
+            # Each person's own agent adds their own steps and calories, from their own profile:
+            # body data never leaves its owner (it isn't part of what Ana shares).
+            msgs = list(pool.map(lambda r: present.messages(plans, r[1], load_profile(r[0]).get("body")), readers))
         for (phone, _), (texts, source) in zip(readers, msgs):
             for i, text in enumerate(texts):  # intro, one per plan, then the question
                 part = "intro" if i == 0 else "question" if i == len(texts) - 1 else "plan"

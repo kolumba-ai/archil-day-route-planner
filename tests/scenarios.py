@@ -13,8 +13,8 @@ import time
 
 from planner import planner, routes, search
 
-FULL = "Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset"
-SOLO = "Plan Saturday: coffee, a museum, burritos, beach at sunset"
+FULL = "Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
+SOLO = "Plan Saturday starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
 SHARED_FIELDS = {"id", "name", "kind", "walking", "food", "activities", "weather"}
 
 
@@ -207,6 +207,13 @@ def live_search(r):
         if src != expected or len(checked) < 3:
             bad.append("%s: %s, %d usable" % (cat, src, len(checked)))
     r.check("F2", "Live search (%s)" % expected, not bad, bad or "verified with sources: " + ", ".join(summary))
+    if mode == "keenable" and os.environ.get("KEENABLE_API_KEY", "").strip():
+        # F5: Keenable's prompted fetch reads a venue's own page for the facts.
+        from planner import keenable
+        a = keenable.parse_facts(keenable.fetch_facts("https://ritualcoffee.com/location/mission/",
+                                                      "Ritual Coffee Roasters (Valencia)"))
+        r.check("F5", "Keenable prompted fetch reads the page", a["same_place"] and a["hours"] == ("06:30", "20:00"),
+                "answer: %s" % a)
 
 
 def street_routing(r):
@@ -317,7 +324,116 @@ def hills_both_ways(r):
                     next(s["name"] for s in flat[0]["stops"] if s["category"] == "park")))
 
 
+def ask_for_start(r):
+    """Q2/Q4: a missing or unknown start stops everything; answering it plans, map first."""
+    os.environ["PLANNER_ROUTING"] = "straight"
+    explored = lambda run: [e["type"] for e in run.events if e["type"] in (
+        "share_request", "checkpoint", "branch", "search_done", "plans")]
+    asked = []
+    for text, reason in (("Plan Saturday with Ana in Portland Oregon, coffee and a park, walk at most 2 km", "missing"),
+                         ("Plan Saturday with Ana in Portland Oregon starting at Xyzzq Qwfp Plaza, coffee and a park", "not_found")):
+        run, _, _ = run_planner(text, "allow", timeout=60)
+        need = ev(run, "need_start")
+        done = ev(run, "done")
+        # An unknown place is "not_found"; if the map service is rate-limiting us, the planner says
+        # "couldn't look up, try again" instead. Either way it must ask and explore nothing.
+        accepted = (reason, "lookup_failed") if reason == "not_found" else (reason,)
+        ok = need and need[0]["reason"] in accepted and not explored(run) and done and done[0].get("reason") == "need_start"
+        asked.append((reason, bool(ok), explored(run), [e["text"][:60] for e in ev(run, "message")][-1:]))
+    r.check("Q2", "Unclear start: ask, don't explore", all(a[1] for a in asked),
+            "; ".join("%s: asked=%s, explored=%s, said %s" % a for a in asked))
+    # Answer the question: the reply is added to the original request, then planning starts.
+    import server
+    first, _, _ = run_planner("Plan Saturday in Portland Oregon, coffee and a park, walk at most 2 km", None, timeout=60)
+    action, text = server.interpret(first, "Me", "St Stephen's Catholic Church")
+    run, _, _ = run_planner(text, None, timeout=240)
+    types = [e["type"] for e in run.events]
+    place_at = types.index("place") if "place" in types else 10 ** 6
+    first_work = min([types.index(t) for t in ("share_request", "branch", "search_done") if t in types] or [10 ** 6])
+    plans = plans_of(run)
+    r.check("Q4", "Map moves to the start before any planning",
+            action == "plan" and place_at < first_work and plans and (ev(run, "place")[0]["start"]).startswith("Saint Stephen"),
+            "reply became: %r; place event #%s, first planning event #%s; %d plans"
+            % (text[-60:], place_at, first_work, len(plans)))
+
+
+USER_PORTLAND = ("Plan Saturday starting at St Stephens Catholic Church in Portland, visit a coffee shop, a park and a "
+                 "restaurant. Start time is 10am. Finish time is no later than 3pm. Must not walk more than 3km.")
+
+
+def replay_portland(r):
+    """Q5: the conversation that kept answering "I couldn't find ...", replayed."""
+    os.environ["PLANNER_ROUTING"] = "osrm"
+    church = {"lat": 45.5145, "lon": -122.6197}
+    problems, notes = [], []
+    for label, text in (("as typed", USER_PORTLAND),
+                        ("with the address reply", USER_PORTLAND + " Starting at 4055 SE Salmon St Portland Or 97214.")):
+        run, secs, _ = run_planner(text, None, timeout=300)
+        place = (ev(run, "place") or [{}])[0]
+        plans = plans_of(run)
+        if not place or routes.km(place, church) > 1.0:
+            problems.append("%s: start %s" % (label, place.get("start") or [e["text"][:70] for e in ev(run, "message")][-1:]))
+            continue
+        for p in plans:
+            if sorted(s["category"] for s in p["stops"]) != ["cafe", "food", "park"]:
+                problems.append("%s: plan %d stops %s" % (label, p["rank"], [s["category"] for s in p["stops"]]))
+            if routes.to_min(p["end"]) > 15 * 60 or p["walk_km"] > 3.0 or p["depart"] != "10:00":
+                problems.append("%s: plan %d ends %s, walks %.2f km" % (label, p["rank"], p["end"], p["walk_km"]))
+        if not plans:
+            problems.append("%s: no plans: %s" % (label, [e["text"][:70] for e in ev(run, "message")][-1:]))
+        notes.append("%s: %s, %d plans ending %s" % (label, place.get("start"), len(plans), [p["end"] for p in plans]))
+    r.check("Q5", "Your Portland conversation, replayed", not problems, "; ".join(problems[:3]) or "; ".join(notes))
+
+
+def claude_parsing(r):
+    """L1: Claude Haiku reads the tricky phrasings that tripped the rules."""
+    from planner import understand
+    os.environ.pop("PLANNER_PARSER", None)
+    if not understand.available():
+        r.check("L1", "Claude parses requests", None, "SKIPPED: needs ANTHROPIC_API_KEY in .env")
+        r.rows[-1]["ok"] = None
+        return
+    cases = [
+        (USER_PORTLAND, {"city": "Portland", "start_place": "St Stephens Catholic Church", "start_min": 600,
+                         "end_min": 900, "max_walk_km": 3.0, "categories": ["cafe", "park", "food"]}),
+        ("Plan Sunday in Chicago starting at Millennium Park at 9:30am: coffee, a museum and lunch, walk at most 2 miles",
+         {"city": "Chicago", "start_place": "Millennium Park", "start_min": 570, "categories": ["cafe", "museum", "food"]}),
+        ("Saturday with Ana, Portland Oregon. Let's meet at 4055 SE Salmon St and grab coffee then hit a park, "
+         "nothing hilly, home by 2", {"start_place": "4055 SE Salmon St", "avoid_hills": True,
+                                      "categories": ["cafe", "park"], "with": ["ana"]}),
+    ]
+    bad = []
+    for text, want in cases:
+        got = understand.understand(text)
+        diffs = {k: (got.get(k), v) for k, v in want.items()
+                 if (round(got.get(k) or 0, 1) != round(v, 1) if isinstance(v, float) else got.get(k) != v)}
+        if got["parsed_by"] != "claude" or diffs:
+            bad.append("%s...: %s %s" % (text[:30], got["parsed_by"], diffs))
+    r.check("L1", "Claude parses requests", not bad, "; ".join(bad) or "%d phrasings read correctly" % len(cases))
+
+
+def subq_decides(r):
+    """J4: SubQ Snap picks the plans for a real request (needs SUBQ_API_KEY)."""
+    from planner import decide
+    if not os.environ.get("SUBQ_API_KEY", "").strip():
+        r.check("J4", "SubQ Snap decides", None, "SKIPPED: needs SUBQ_API_KEY in .env")
+        r.rows[-1]["ok"] = None
+        return
+    os.environ["PLANNER_DECIDER"] = "subq"
+    run, secs, _ = run_planner(FULL, "allow", timeout=120)
+    d = (ev(run, "decided") or [{}])[0]
+    plans = plans_of(run)
+    r.check("J4", "SubQ Snap decides", d.get("by") == "SubQ Snap 1.1" and plans
+            and all("SubQ Snap" in (p.get("why") or "") for p in plans),
+            "decided by %s %s; %d plans; first reason: %s" % (d.get("by"), d.get("note") or "", len(plans),
+                                                             (plans[0].get("why") if plans else "")[:120]))
+
+
 SCENARIOS = {
+    "subq-decides": (subq_decides, "after-search"),
+    "claude-parsing": (claude_parsing, "test-base"),
+    "replay-portland": (replay_portland, "test-base"),
+    "ask-start": (ask_for_start, "test-base"),
     "city-portland": (city_portland, "test-base"),
     "city-chicago": (city_chicago, "test-base"),
     "hills-both-ways": (hills_both_ways, "test-base"),

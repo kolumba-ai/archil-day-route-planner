@@ -8,6 +8,8 @@ built-in template with the same icons is used, so the demo also works offline.
 import json
 import os
 
+from . import fitness
+
 MODEL = "claude-opus-5-5"
 NUMBERS = ["1️⃣", "2️⃣", "3️⃣"]
 
@@ -21,7 +23,7 @@ Write the messages as JSON with these fields:
 
 Rules for every text:
 - Keep every fact exactly as given. Never invent places, times or facts. Name every stop of every plan, exactly as written.
-- A plan text is short: the plan number, the departure time ("depart"), then each stop in order, one per line. Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
+- A plan text is short: the plan number, the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥. Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
 - Use emoji icons that match the content: 🕙 departure, ☕ cafe, 🏛️ museum, 🌳 park or trail, 🌯 burritos or lunch, 🏖️ beach, 🐕 the dog, and start each plan with 1️⃣, 2️⃣ or 3️⃣.
 - Plain text with line breaks. No markdown: no headings, bold or asterisks.
 - Address the reader in the second person. If the reader is Ana, call the person who invited her "your friend"."""
@@ -49,7 +51,7 @@ def _note_icon(note):
     return "🌫️" if "fog" in n else "🐕" if "dog" in n else "⏳" if "free time" in n else "⚠️"
 
 
-def template(plans, reader):
+def template(plans, reader, body=None):
     """Offline version: the same facts and icons, written by code. Returns a list of texts."""
     who = "you and your friend" if reader == "Ana" else "your group"
     day = plans[0].get("day", "Saturday") if plans else "Saturday"
@@ -61,6 +63,8 @@ def template(plans, reader):
         lines = ["%s Plan %d · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= 3 else p["rank"], p["rank"],
                                                    p.get("depart", "10:00"))]
         lines += ["%s %s" % (_stop_icon(s), s["name"]) for s in p["stops"]]
+        fit = fitness.estimate(p, body)  # the reader's own steps and calories
+        lines.append("👟 ~{:,} steps".format(fit["steps"]) + (" · 🔥 ~%d kcal" % fit["kcal"] if "kcal" in fit else ""))
         out.append("\n".join(lines))
     numbers = [str(i) for i in range(1, len(plans) + 1)]
     reply = numbers[0] if len(numbers) == 1 else ", ".join(numbers[:-1]) + " or " + numbers[-1]
@@ -68,12 +72,14 @@ def template(plans, reader):
     return out
 
 
-def _facts(plans):
+def _facts(plans, body=None):
     return [{"rank": p["rank"], "depart": p.get("depart", "10:00"),
-             "stops": [{"name": s["name"], "category": s["category"]} for s in p["stops"]]} for p in plans]
+             "stops": [{"name": s["name"], "category": s["category"]} for s in p["stops"]],
+             "your_steps": fitness.estimate(p, body)["steps"],
+             "your_kcal": fitness.estimate(p, body).get("kcal")} for p in plans]
 
 
-def with_claude(plans, reader):
+def with_claude(plans, reader, body=None):
     import anthropic
     client = anthropic.Anthropic()
     resp = client.beta.messages.create(
@@ -82,7 +88,7 @@ def with_claude(plans, reader):
         system=SYSTEM,
         betas=["server-side-fallback-2026-07-01"],
         messages=[{"role": "user", "content": "Reader: %s\nPlans (JSON):\n%s"
-                   % (reader, json.dumps(_facts(plans), ensure_ascii=False))}],
+                   % (reader, json.dumps(_facts(plans, body), ensure_ascii=False))}],
         extra_body={"fallbacks": "default",
                     "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}}},
         timeout=60,
@@ -111,11 +117,11 @@ def claude_available():
         return False
 
 
-def messages(plans, reader):
+def messages(plans, reader, body=None):
     """Returns (list of texts, source) where source is 'claude' or 'template'."""
     if claude_available():
         try:
-            return with_claude(plans, reader), "claude"
+            return with_claude(plans, reader, body), "claude"
         except Exception as e:
             print("Claude formatting failed, using the template: %r" % e)
-    return template(plans, reader), "template"
+    return template(plans, reader, body), "template"

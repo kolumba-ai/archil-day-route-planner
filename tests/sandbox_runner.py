@@ -58,7 +58,7 @@ def scenario(name):
     t_fork = T()
     sb = base.fork(name="gdp-%s-%s" % (RUN, name))
     fork_s = T() - t_fork
-    env = ["PLANNER_DATA=%s/data" % APP, "PLANNER_ROUTING=straight"]  # F4 turns street routing back on
+    env = ["PLANNER_DATA=%s/data" % APP, "PLANNER_ROUTING=straight", "PLANNER_PARSER=rules", "PLANNER_DECIDER=rules"]  # F4 turns routing back on
     if parent == "after-search":
         env.append("PLANNER_CANDIDATES=%s/candidates.json" % APP)
     if name == "ana-timeout":

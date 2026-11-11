@@ -24,7 +24,9 @@ PREFER_HILLS = (r"\b((with|some|lots of|plenty of|want|like|love|prefer|include|
                 r"uphill|a (good )?climb|climbing|workout|steep)\b")
 
 TIME = r"(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)"
-STOP_WORDS = r"(?:[,.;:!?]|\s+(?:and|with|at|start(?:ing)?|walk(?:ing)?|visit(?:ing)?|from|on)\b|$)"
+# A sentence-ending period ends the place, but not the one in "St." / "Mt." / "Ave." / "Dr.".
+STOP_WORDS = (r"(?:[,;:!?]|(?<!\bSt)(?<!\bMt)(?<!\bAve)(?<!\bDr)\.(?:\s|$)|"
+              r"\s+(?:and|with|at|in|start(?:ing)?|walk(?:ing)?|visit(?:ing)?|from|on)\b|$)")
 
 
 def _clock(h, m, ap):
@@ -32,21 +34,37 @@ def _clock(h, m, ap):
     return h * 60 + int(m or 0)
 
 
+END_TIME = (r"(?:finish(?:ing)?(?: time)?|end(?:ing)?(?: time)?|done|back|home|wrap(?:ping)? up|be finished)"
+            r"(?:\s+(?:is|must be|should be|by|at|before))*\s*(?:no later than|not later than|by|before|at)?\s*")
+IS_TIME = r"\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|noon|midday"
+
+
 def parse(text):
     low = text.lower()
-    # Start time: "start at 10am", "at 9:30 am", "from 11am"; default 10:00.
+    # Finish time: "finish no later than 3pm", "back by 4 pm", "end time is 15:00". Removed from
+    # the text before reading the start time, so "finish at 3pm" isn't taken as the start.
+    end_min = None
+    low_start = low
+    for rx in (END_TIME + TIME, r"(?:no later than|not later than)\s*" + TIME):
+        for m in list(re.finditer(rx, low_start)):  # every finish phrase; the earliest time wins
+            t = _clock(*m.groups()[-3:])
+            end_min = t if end_min is None else min(end_min, t)
+        low_start = re.sub(rx, " ", low_start)
+
+    # Start time: "start at 10am", "start time is 9:30 am", "from 11am"; default 10:00.
     start_min = 10 * 60
-    m = re.search(r"(?:start(?:ing)?|leave|leaving|from|at)\s+(?:at\s+)?" + TIME, low)
+    m = re.search(r"(?:start(?:ing)?(?: time)?(?:\s+is)?|leave|leaving|from|at)\s+(?:at\s+)?" + TIME, low_start)
     if m:
         start_min = _clock(*m.groups())
 
-    # Starting place: "starting at X" / "start from X", where X is not a time.
+    # Starting place: "starting at X" / "start from X", where X is not a time. The LAST one
+    # wins, so a reply to "Where should we start from?" replaces the earlier one. It stops
+    # at " in <city>": "St Stephens Catholic Church in Portland" -> "St Stephens Catholic Church".
     start_place = None
     for m in re.finditer(r"\bstart(?:ing)?\s+(?:at|from)\s+(.+?)" + STOP_WORDS, text, re.I):
         cand = m.group(1).strip()
-        if not re.match(r"^\d", cand) and len(cand) > 2:
+        if len(cand) > 2 and not re.fullmatch(IS_TIME, cand.lower()):
             start_place = cand
-            break
 
     # City: "in Portland Oregon", "in New York City". The first capitalized phrase after "in".
     city = None
@@ -58,8 +76,8 @@ def parse(text):
 
     # Walking limit: "no more than 2km", "at most 1.5 miles", "under 3 km".
     max_walk_km = None
-    m = re.search(r"(?:no more than|not more than|at most|max(?:imum)?(?: of)?|under|less than|up to|within)\s*"
-                  r"(\d+(?:\.\d+)?)\s*(km|kilomet\w*|mi\b|miles?)", low)
+    m = re.search(r"(?:(?:no|not)(?:\s+\w+){0,3}?\s+more than|at most|max(?:imum)?(?: of)?|under|less than|up to|within|"
+                  r"limit(?: of)?|walk(?:ing)?)\s*(\d+(?:\.\d+)?)\s*(km|kilomet\w*|mi\b|miles?)", low)
     if m:
         v = float(m.group(1))
         max_walk_km = round(v * 1.609, 2) if m.group(2).startswith("mi") else v
@@ -84,6 +102,7 @@ def parse(text):
         "city": city,  # None = San Francisco demo
         "start_place": start_place,
         "start_min": start_min,
+        "end_min": end_min,  # latest time to finish, or None
         "max_walk_km": max_walk_km,
         "avoid_hills": bool(re.search(AVOID_HILLS, low)),
         "prefer_hills": bool(re.search(PREFER_HILLS, low)) and not re.search(AVOID_HILLS, low),

@@ -16,13 +16,14 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 KEYED_API = "https://api.keenable.ai/v1/search"
 PUBLIC_API = "https://api.keenable.ai/v1/search/public"
 TITLE = "group-day-planner"
-CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "keenable-cache.json")
+CACHE_FILE = os.path.join(os.environ.get("PLANNER_CACHE_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"), "keenable-cache.json")
 VERIFY_TTL_S = 24 * 3600
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -168,10 +169,86 @@ def dog_policy(text, category):
     return None
 
 
+KEYED_FETCH = "https://api.keenable.ai/v1/fetch"
+
+FACTS_PROMPT = ("About {name} in {city}: answer ONLY from this page, in exactly these four lines.\n"
+                "same_place: yes if this page is about {name} in {city}, otherwise no\n"
+                "saturday_hours: HH:MM-HH:MM in 24-hour time, or closed, or unknown\n"
+                "dogs: inside, patio, leash, offleash, no, or unknown\n"
+                "vegetarian: yes, no, or unknown")
+
+
+def fetch_facts(url, name, city="San Francisco"):
+    """Keenable's fetch with a prompt: it reads the page and answers our question (keyed only)."""
+    key = os.environ.get("KEENABLE_API_KEY", "").strip()
+    if not key:
+        return None
+    q = urllib.parse.urlencode({"url": url, "prompt": FACTS_PROMPT.format(name=name, city=city)})
+    req = urllib.request.Request(KEYED_FETCH + "?" + q, headers={"X-API-Key": key, "X-Keenable-Title": TITLE})
+    for attempt in range(3):
+        try:
+            with PACER, urllib.request.urlopen(req, timeout=40) as r:
+                return json.load(r).get("content", "")
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+
+
+def parse_facts(text):
+    """Read the three-line answer: {"hours": ("HH:MM","HH:MM") | "closed" | None,
+    "dogs": "inside|patio|leash|offleash|no" | None, "vegetarian": True | False | None}."""
+    out = {"same_place": None, "hours": None, "dogs": None, "vegetarian": None}
+    for line in (text or "").splitlines():
+        k, _, v = line.partition(":")
+        k, v = k.strip().lower().replace(" ", "_"), v.strip().lower()
+        if k.startswith("same"):
+            out["same_place"] = v.startswith("yes")
+        elif k.startswith("saturday"):
+            m = re.search(r"(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})", v)
+            if m:
+                out["hours"] = ("%02d:%s" % (int(m.group(1)), m.group(2)), "%02d:%s" % (int(m.group(3)), m.group(4)))
+            elif "closed" in v:
+                out["hours"] = "closed"
+            else:  # "6:30am-8:00pm" style, if the model ignored the 24-hour format
+                out["hours"] = saturday_hours("Sat " + v)
+        elif k.startswith("dog"):
+            word = re.search(r"\b(inside|patio|offleash|off-leash|leash|no)\b", v)
+            if word and "unknown" not in v:
+                out["dogs"] = word.group(1).replace("off-leash", "offleash")
+        elif k.startswith("veg"):
+            if v.startswith("yes"):
+                out["vegetarian"] = True
+            elif v.startswith("no"):
+                out["vegetarian"] = False
+    return out
+
+
+def own_site(url, name):
+    """True if the site's registered domain (e.g. ritualcoffee.com) carries the venue's name."""
+    host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+    domain = ".".join(host.split(".")[-2:])
+    tokens = [t for t in re.findall(r"[a-z]{4,}", name.lower()) if t not in ("coffee", "park", "museum", "cafe", "beach")]
+    return any(t in domain.replace("-", "") for t in tokens)
+
+
+def best_page(results, name):
+    """The result most likely to be the venue's own page: its name in the title or domain."""
+    tokens = [t for t in re.findall(r"[a-z]{4,}", name.lower()) if t not in ("coffee", "park", "museum", "cafe", "beach")]
+    for r in results:
+        host = urllib.parse.urlparse(r.get("url", "")).netloc.lower()
+        if any(t in host for t in tokens):
+            return r
+    for r in results:
+        if name.lower().split(" (")[0] in (r.get("title") or "").lower():
+            return r
+    return results[0] if results else None
+
+
 def verify(venue, category, city="San Francisco"):
-    """Check one venue (cached for a day): one combined search for hours, location and dogs,
-    plus a dogs-only search only if the first found nothing about dogs."""
-    ck = "%s|%s|%s" % (city, category, venue["name"]) if city != "San Francisco" else "%s|%s" % (category, venue["name"])
+    """Check one venue (cached for a day). With a key: find its page with a search, then ask a
+    prompted fetch for hours, dogs and vegetarian options. Snippet matching fills what's left."""
+    ck = "v2|%s|%s|%s" % (city, category, venue["name"])
     hit = _cache_get(ck)
     if hit:
         return dict(hit, cached=True)
@@ -193,7 +270,42 @@ def _verify(venue, category, city="San Francisco"):
         v["verify_error"] = repr(e)
         return v
     outdoors = category == "beach" or v.get("kind") == "outdoor_alternative"
-    if not outdoors:  # beaches and trails are open all day; their pages list visitor-center hours
+    # 1. The venue's own page, read by Keenable with our question (prompted fetch).
+    page = best_page(res, v["name"])
+    if page and _keyed():
+        try:
+            facts = parse_facts(fetch_facts(page["url"], v["name"], city))
+            v["facts_source"] = page["url"]
+            if facts["same_place"] is not True:  # a page about another place (or unsure): ignore it
+                v["facts_note"] = "page not about this venue: %s" % page["url"]
+                facts = {"hours": None, "dogs": None, "vegetarian": None}
+            if facts["hours"] == "closed" and not outdoors:
+                # "Closed" drops the venue, so only the venue's own site may say it (its domain
+                # carries the name); aggregator pages are often out of date.
+                if own_site(page["url"], v["name"]):
+                    v["open"], v["close"] = "00:00", "00:00"
+                    verified.append("hours (own site: closed)")
+                else:
+                    v["facts_note"] = "a third-party page says closed on Saturday; not trusted: %s" % page["url"]
+            elif facts["hours"] and not outdoors:
+                v["open"], v["close"] = facts["hours"]
+                if v["close"] <= v["open"]:
+                    v["close"] = "23:59"
+                verified.append("hours (page)")
+            if facts["dogs"]:
+                # Read from the page by a model: trusted both ways, unlike keyword matching.
+                v["dogs"] = {"inside": "patio" if category in ("cafe", "food") else "leash"}.get(facts["dogs"], facts["dogs"])
+                if category in ("cafe", "food") and v["dogs"] in ("leash", "offleash"):
+                    v["dogs"] = "patio"
+                verified.append("dogs (page)")
+            if facts["vegetarian"] is not None and category in ("cafe", "food"):
+                v["vegetarian_ok"] = facts["vegetarian"]
+                verified.append("vegetarian (page)")
+            sources.append(page["url"])
+        except Exception as e:
+            v["facts_error"] = str(e)[:100]
+    # 2. Snippet matching for whatever the page didn't answer.
+    if not outdoors and not any(x.startswith("hours") for x in verified):
         for r in res:
             hrs = saturday_hours(r.get("snippet", ""))
             if hrs:
@@ -221,7 +333,9 @@ def _verify(venue, category, city="San Francisco"):
                 return True
         return False
 
-    if not check_dogs(res):  # nothing about dogs in the combined search: one dogs-only search
+    if any(x.startswith("dogs") for x in verified):
+        pass  # the page already answered
+    elif not check_dogs(res):  # nothing about dogs in the combined search: one dogs-only search
         try:
             check_dogs(search("%s %s dogs allowed" % (name, city), n=4))
         except Exception:

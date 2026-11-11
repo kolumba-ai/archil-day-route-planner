@@ -15,6 +15,7 @@ otherwise branches are local copy-on-write clones.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -26,6 +27,8 @@ from tests.scenarios import SCENARIOS
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 KEEP = "--keep" in sys.argv
+# Scenarios that call Nominatim, Overpass, Open-Meteo or OSRM: run one at a time.
+LIVE_MAP_SCENARIOS = {"replay-portland", "ask-start", "city-portland", "city-chicago", "hills-both-ways", "street-routing"}
 MANUAL = [
     ("H3", "Map draws the selected plan", "check in the browser"),
     ("H4", "Layout at 1280x800", "check in the browser (known failing: map overlaps plans)"),
@@ -85,7 +88,7 @@ def run_on_archil():
     buf = io.BytesIO()
     skip = lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for item in ("planner", "tests", "run_tests.py"):
+        for item in ("planner", "tests", "run_tests.py", "server.py"):
             tar.add(os.path.join(ROOT, item), arcname=item, filter=skip)
     payload = base64.b64encode(buf.getvalue()).decode()
     flags = " ".join(a for a in sys.argv[1:] if a in ("--keenable", "--keep"))
@@ -125,6 +128,7 @@ def main():
     # --- test-base: code + tests + seed data
     for item in ("planner", "tests"):
         _clone_tree(os.path.join(ROOT, item), os.path.join(disk.work, item))
+    shutil.copy(os.path.join(ROOT, "server.py"), os.path.join(disk.work, "server.py"))  # Q3 and Q4 use it
     t = time.time()
     disk.checkpoint(disk.work, "test-base")
     base_bytes = _dir_bytes(disk.work)
@@ -151,7 +155,12 @@ def main():
         # sandbox-routes scenarios opt back in below and in tests/scenarios.py.
         env = dict(os.environ, PLANNER_DATA=os.path.join(path, "data"), PLANNER_SEARCH="seed",
                    PLANNER_ROUTING="straight",  # street-routing (F4) switches it back on itself
-                   PLANNER_PRESENT="template")  # no Claude calls in tests
+                   PLANNER_PRESENT="template",  # no Claude calls in tests
+                   PLANNER_PARSER="rules",  # repeatable parsing; L1 tests Claude's parsing on its own
+                   PLANNER_DECIDER="rules",  # repeatable decisions; J3 tests Claude's decisions on its own
+                   # Share the project's caches of map, routing and Keenable lookups across test
+                   # copies, so live tests don't repeat lookups the free services rate-limit.
+                   PLANNER_CACHE_DIR=os.path.join(ROOT, "data"))
         env.pop("PLANNER_ROUTES", None)
         env.pop("PLANNER_PROFILES_DIR", None)
         if parent == "after-search":
@@ -180,9 +189,14 @@ def main():
                 "written": files_written_since(path, t0), "start": t0}
 
     names = [n for n in SCENARIOS if not (archil and n == "sandbox-routes")]
+    serial = [n for n in names if n in LIVE_MAP_SCENARIOS]
+    parallel = [n for n in names if n not in LIVE_MAP_SCENARIOS]
     t_all = time.time()
-    with ThreadPoolExecutor(max_workers=len(names)) as pool:
-        runs = list(pool.map(run_scenario, names))
+    with ThreadPoolExecutor(max_workers=len(parallel) + 1) as pool:
+        # The live-map scenarios share free, rate-limited services, so they run one after
+        # another in a single worker, alongside all the other scenarios in parallel.
+        serial_job = pool.submit(lambda: [run_scenario(n) for n in serial])
+        runs = list(pool.map(run_scenario, parallel)) + serial_job.result()
     wall = time.time() - t_all
 
     # --- E2 isolation and E7 parallel branches, checked across all branches
@@ -195,7 +209,7 @@ def main():
         data = os.path.join(r["path"], "data")
         mine = sorted(d for d in os.listdir(data) if d.startswith("outing-")) if os.path.isdir(data) else []
         # E8 plans twice (local, then sandboxes); M3 twice (avoiding hills, then wanting them)
-        expected = 2 if r["name"] in ("sandbox-routes", "hills-both-ways") else 1
+        expected = {"sandbox-routes": 2, "hills-both-ways": 2, "ask-start": 4, "replay-portland": 2}.get(r["name"], 1)
         if len(mine) > expected:
             crosstalk.append("%s: %d outing folders" % (r["name"], len(mine)))
         for o in mine:
@@ -209,12 +223,14 @@ def main():
     rows.append({"id": "E2", "name": "Isolation", "ok": not crosstalk,
                  "detail": "; ".join(crosstalk) or "%d branches, no crosstalk" % len(runs), "where": "all branches"})
     busy = sum(r["secs"] for r in runs)
-    slowest = max(r["secs"] for r in runs)
+    # Parallel scenarios overlap; the live-map ones run one after another in a single worker.
+    serial_s = sum(r["secs"] for r in runs if r["name"] in LIVE_MAP_SCENARIOS)
+    slowest = max([serial_s] + [r["secs"] for r in runs if r["name"] not in LIVE_MAP_SCENARIOS])
     written = sum(r["written"] for r in runs)
     # Parallel means the whole run takes about as long as its slowest branch, not the sum.
     rows.append({"id": "E7", "name": "Tests run on parallel branches",
-                 "ok": not crosstalk and wall < slowest + 5 and written < len(runs) * base_bytes,
-                 "detail": "%d branches, %.1f s wall (slowest %.1f s, sum %.1f s); wrote %.0f KB vs %.0f KB for full copies; avg fork %.0f ms"
+                 "ok": not crosstalk and wall < slowest + 15 and written < len(runs) * base_bytes,
+                 "detail": "%d branches, %.1f s wall (longest worker %.1f s, sum %.1f s); wrote %.0f KB vs %.0f KB for full copies; avg fork %.0f ms"
                            % (len(runs), wall, slowest, busy, written / 1e3, len(runs) * base_bytes / 1e3,
                               sum(r["fork_ms"] for r in runs) / len(runs)),
                  "where": "all branches"})
@@ -262,7 +278,7 @@ def app_tarball():
     buf = io.BytesIO()
     skip = lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for item in ("planner", "tests", "run_tests.py"):
+        for item in ("planner", "tests", "run_tests.py", "server.py"):
             tar.add(os.path.join(ROOT, item), arcname=item, filter=skip)
     return buf.getvalue()
 

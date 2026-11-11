@@ -18,7 +18,7 @@ import urllib.request
 BASE = "https://routing.openstreetmap.de/routed-%s"
 HEADERS = {"User-Agent": "group-day-planner-demo"}
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(os.path.dirname(HERE), "data", "routing-cache.json")
+CACHE_FILE = os.path.join(os.environ.get("PLANNER_CACHE_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"), "routing-cache.json")
 _lock = threading.Lock()
 _cache = None
 
@@ -100,6 +100,44 @@ def build_matrix(points):
     return m
 
 
+VALHALLA = "https://valhalla1.openstreetmap.de/route"
+
+
+def _decode_polyline6(s):
+    """Valhalla's encoded shape (polyline, 6 decimals) -> [[lat, lon], ...]."""
+    pts, i, lat, lon = [], 0, 0, 0
+    while i < len(s):
+        vals = []
+        for _ in range(2):
+            shift = result = 0
+            while True:
+                b = ord(s[i]) - 63
+                i += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            vals.append(~(result >> 1) if result & 1 else result >> 1)
+        lat += vals[0]
+        lon += vals[1]
+        pts.append([round(lat / 1e6, 5), round(lon / 1e6, 5)])
+    return pts
+
+
+def _valhalla_path(a, b, mode, timeout=30):
+    body = json.dumps({"locations": [{"lat": a["lat"], "lon": a["lon"]}, {"lat": b["lat"], "lon": b["lon"]}],
+                       "costing": "pedestrian" if mode == "walk" else "auto"}).encode()
+    req = urllib.request.Request(VALHALLA, data=body, headers=dict(HEADERS, **{"Content-Type": "application/json"}))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        trip = json.load(r)["trip"]
+    pts = []
+    for leg in trip["legs"]:
+        pts += _decode_polyline6(leg["shape"])
+    if len(pts) < 2:
+        raise RuntimeError("Valhalla returned no path")
+    return pts
+
+
 def path(a, b, mode, timeout=30):
     """Street path from a to b as [[lat, lon], ...]; mode 'walk' (foot) or 'ride' (car)."""
     profile = "foot" if mode == "walk" else "car"
@@ -110,8 +148,11 @@ def path(a, b, mode, timeout=30):
             return cache[ck]
     url = (BASE % profile) + "/route/v1/driving/%.5f,%.5f;%.5f,%.5f?overview=full&geometries=geojson" % (
         a["lon"], a["lat"], b["lon"], b["lat"])
-    coords = _get(url, timeout=timeout)["routes"][0]["geometry"]["coordinates"]
-    pts = [[round(lat, 5), round(lon, 5)] for lon, lat in coords]
+    try:
+        coords = _get(url, timeout=timeout)["routes"][0]["geometry"]["coordinates"]
+        pts = [[round(lat, 5), round(lon, 5)] for lon, lat in coords]
+    except Exception:  # OSRM busy or refusing: ask Valhalla, a second OpenStreetMap router
+        pts = _valhalla_path(a, b, mode, timeout)
     with _lock:
         _cache[ck] = pts
         _save()

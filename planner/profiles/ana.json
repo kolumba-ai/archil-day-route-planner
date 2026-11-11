@@ -2,8 +2,39 @@
   "id": "ana",
   "name": "Ana",
   "kind": "person",
-  "walking": { "max_km": 6, "hills": "avoid", "pace_kmh": 4.2, "rest_every_min": 45 },
-  "food": { "diet": "vegetarian", "loves": ["burritos", "pastries"], "avoids": ["cilantro"] },
-  "activities": { "museum_max_min": 90, "likes": ["art", "views"], "dislikes": ["crowds"] },
-  "weather": { "cold_tolerance": "low", "wind_tolerance": "medium" }
+  "walking": {
+    "max_km": 6,
+    "hills": "avoid",
+    "pace_kmh": 4.2,
+    "rest_every_min": 45
+  },
+  "food": {
+    "diet": "vegetarian",
+    "loves": [
+      "burritos",
+      "pastries"
+    ],
+    "avoids": [
+      "cilantro"
+    ]
+  },
+  "activities": {
+    "museum_max_min": 90,
+    "likes": [
+      "art",
+      "views"
+    ],
+    "dislikes": [
+      "crowds"
+    ]
+  },
+  "weather": {
+    "cold_tolerance": "low",
+    "wind_tolerance": "medium"
+  },
+  "body": {
+    "weight_kg": 60,
+    "height_cm": 165,
+    "backpack_kg": 0
+  }
 }

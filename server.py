@@ -25,8 +25,13 @@ def interpret(run, who, text):
     """
     low = text.lower().strip()
     has_plans = run is not None and bool(run.state.get("plans"))
-    if who == "Me" and (not has_plans or re.search(r"\bplan (saturday|sunday|a day|my|our)\b", low)):
-        return "plan", None
+    fresh = re.search(r"\bplan (monday|tuesday|wednesday|thursday|friday|saturday|sunday|a day|my|our)\b", low)
+    if who == "Me" and run is not None and run.state.get("needs_start") and not fresh:
+        # The answer to "Where should we start from?": add it to the original request.
+        place = re.sub(r"^(?:let'?s\s+)?(?:start(?:ing)?\s+)?(?:at|from|in)?\s*", "", text.strip(), flags=re.I).rstrip(".!")
+        return "plan", "%s. Starting at %s." % (run.state["original"].rstrip(". "), place)
+    if who == "Me" and (not has_plans or fresh):
+        return "plan", text
     if not has_plans:
         return "hint", "No plans yet. Ask your friend to start one."
     n = len(run.state["plans"])
@@ -141,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             action, arg = interpret(run, who, text)
             try:
                 if action == "plan":
-                    return self._json(200, {"action": "plan", "run": planner.start(text).id})
+                    return self._json(200, {"action": "plan", "run": planner.start(arg or text).id})
                 if action == "vote":
                     planner.vote(run, who, arg)
                     return self._json(200, {"action": "vote"})

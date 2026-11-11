@@ -141,9 +141,9 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset'},
+const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset'},
                  ana: {who:'Ana', title:"Ana's agent", placeholder:"Reply 1, 2 or 3 to pick a plan"} };
-let run = null, es = null, runInfo = {}, events = [], plans = [], votes = {}, decided = null, selected = 0, map, layer;
+let run = null, es = null, runInfo = {}, events = [], plans = [], votes = {}, decided = null, selected = 0, map, layer, startPlace = null;
 
 // ---------------------------------------------------------------- phones
 function buildPhone(id) {
@@ -219,6 +219,8 @@ const FIELDS = [
                   ['activities.dislikes','Dislikes','list']]],
   ['Weather', [['weather.cold_tolerance','Cold tolerance','select:low,medium,high'],
                ['weather.wind_tolerance','Wind tolerance','select:low,medium,high']]],
+  ['Body (private: used only for your own steps and calories)', [['body.weight_kg','Weight (kg)','number'],
+               ['body.height_cm','Height (cm)','number'], ['body.backpack_kg','Backpack (kg)','number']]],
 ];
 const DOG = [['Biscuit (dog)', [['walking.max_km','Max walking (km)','number'], ['walking.water_every_min','Water every (min)','number']]]];
 const get = (o, path) => path.split('.').reduce((a, k) => a && a[k], o);
@@ -238,6 +240,18 @@ function limitsForm(container, pid, groups, prof) {
       input.dataset.path = path; input.dataset.type = type; l.appendChild(input); box.appendChild(l);
     });
   });
+  // BMI, computed here from the form as you type; it's shown only on your own phone.
+  const w = box.querySelector('[data-path="body.weight_kg"]'), h = box.querySelector('[data-path="body.height_cm"]');
+  if (w && h) {
+    const out = document.createElement('div'); out.className = 'saved'; out.style.color = 'var(--quiet)';
+    const upd = () => {
+      const kg = parseFloat(w.value), m = parseFloat(h.value) / 100;
+      if (!(kg > 0 && m > 0)) { out.textContent = ''; return; }
+      const b = kg / (m * m);
+      out.textContent = 'BMI ' + b.toFixed(1) + ' (' + (b < 18.5 ? 'underweight' : b < 25 ? 'healthy weight' : b < 30 ? 'overweight' : 'obesity range') + ')';
+    };
+    w.oninput = h.oninput = upd; upd(); box.appendChild(out);
+  }
   const save = document.createElement('button'); save.className = 'save'; save.textContent = 'Save ' + (pid === 'biscuit' ? "Biscuit's" : 'my') + ' limits';
   const saved = document.createElement('div'); saved.className = 'saved';
   save.onclick = async () => {
@@ -266,7 +280,7 @@ async function loadProfiles() {
 // ---------------------------------------------------------------- runs and events
 function follow(id, fresh) {
   if (es) es.close();
-  run = id; events = []; plans = []; votes = {}; decided = null; selected = 0;
+  run = id; events = []; plans = []; votes = {}; decided = null; selected = 0; startPlace = null;
   runInfo = {fresh};
   renderPlans(); renderTech();
   es = new EventSource('/api/events?run=' + id);
@@ -279,6 +293,22 @@ function handle(e) {
     case 'backend': $('backend').textContent = 'Disk: ' + e.name + ' · Search: ' + e.search + ' · OpenInstinct agents simulated';
                     runInfo.backend = e.name; runInfo.replan = e.replan_of; break;
     case 'message': bubble(e.phone, e.text, false, {ask: e.ask}); break;
+    case 'decided':
+      $('backend').textContent += ' · Plans chosen by ' + e.by + (e.note ? ' (' + e.note.slice(0, 60) + ')' : '');
+      break;
+    case 'request':
+      $('backend').textContent += ' · Request read by ' + (e.parsed_by === 'claude' ? 'Claude Haiku 5.5' : 'rules') +
+        (e.parse_error ? ' (Claude failed: ' + e.parse_error.slice(0, 40) + ')' : '');
+      break;
+    case 'place': {  // the start is known: move the map there before any route is planned
+      startPlace = e;
+      document.querySelector('.tabs button[data-tab=map]').click();
+      drawMap(); map.setView([e.lat, e.lon], 15);
+      const pills = $('map-pills'); pills.innerHTML = '<span class="empty" style="padding:0">📍 ' + esc(e.start) + ', ' + esc(e.city) + ' · planning…</span>';
+      break; }
+    case 'need_start':
+      $('map-pills').innerHTML = '<span class="empty" style="padding:0">⚠ Waiting for a starting point</span>';
+      break;
     case 'plans': plans = e.plans; selected = 0; renderPlans(); break;
     case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply 1, 2 or 3
       document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' textarea').placeholder =
@@ -322,7 +352,7 @@ function renderPlans() {
   plans.forEach(p => {
     const d = document.createElement('div'); d.className = 'plan' + (decided === p.rank ? ' decided' : '');
     let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
-            p.walk_km + ' km walking · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
+            p.walk_km + ' km walking · 👟 ≈' + (p.steps_typical || 0).toLocaleString() + ' steps · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
     // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
     const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️', park:'🌳'}[s.category] || '📍');
     let from = (p.start || 'Start (Noe Valley)'), at = p.depart || '10:00';
@@ -337,7 +367,7 @@ function renderPlans() {
       h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + ICON(s) + ' <b>' + esc(s.name) + '</b></td></tr>';
       from = s.name;
     });
-    h += '</table><div class="note">' + scoreText(p) + '</div>';
+    h += '</table>' + (p.why ? '<div class="note">💡 ' + esc(p.why) + '</div>' : '') + '<div class="note">' + scoreText(p) + '</div>';
     if (p.notes.length) h += '<div class="note">' + p.notes.map(esc).join(' · ') + '</div>';
     h += '<div class="note">from branch <code>' + esc(p.branch) + '</code></div>';
     d.innerHTML = h; d.onclick = () => { selected = p.rank - 1; renderPlans(); }; box.appendChild(d);
@@ -347,7 +377,13 @@ function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt
 
 function drawMap() {
   layer.clearLayers();
-  const p = plans[selected]; if (!p) return;
+  map.invalidateSize();
+  const p = plans[selected];
+  if (!p) {  // no plan yet: show where we start
+    if (startPlace) L.circleMarker([startPlace.lat, startPlace.lon], {radius:8, color:'#555', fillColor:'#d9480f', fillOpacity:.9})
+      .addTo(layer).bindTooltip('Start: ' + startPlace.start + ' (' + startPlace.city + ')', {permanent:true, direction:'top'});
+    return;
+  }
   const start = [p.start_lat || 37.7502, p.start_lon || -122.4337];
   const pts = [start].concat(p.stops.map(s => [s.lat, s.lon]));
   // Each leg follows the streets when the router gave a path; walks solid, rides dashed.

@@ -1,8 +1,9 @@
 """Unit tests A, B, D. Fast, no disk, no network. Method names start with the test ID."""
 import copy
+import os
 import unittest
 
-from planner import planner, request, routes, search
+from planner import fitness, planner, present, request, routes, search
 
 FERRY = {"name": "Ferry Building", "lat": 37.7955, "lon": -122.3937}
 CRISSY = {"name": "Crissy Field", "lat": 37.8045, "lon": -122.4486}
@@ -185,6 +186,30 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(r["categories"], ["cafe", "museum", "food", "beach"])
         self.assertTrue(r["dog"])
 
+    USER = ("Plan Saturday starting at St Stephens Catholic Church in Portland, visit a coffee shop, a park and a "
+            "restaurant. Start time is 10am. Finish time is no later than 3pm. Must not walk more than 3km.")
+
+    def test_R6_start_place_stops_at_the_city(self):
+        r = request.parse(self.USER)
+        self.assertEqual((r["start_place"], r["city"]), ("St Stephens Catholic Church", "Portland"))
+        self.assertEqual(r["categories"], ["cafe", "park", "food"])
+        r = request.parse("Plan Saturday in Portland starting at St. Stephen Catholic Church at 9am, coffee")
+        self.assertEqual((r["start_place"], r["start_min"]), ("St. Stephen Catholic Church", 9 * 60))
+
+    def test_R7_addresses_and_replies(self):
+        r = request.parse(self.USER + " Starting at 4055 SE Salmon St Portland Or 97214.")
+        self.assertEqual(r["start_place"], "4055 SE Salmon St Portland Or 97214")  # digits: an address, not a time
+        r = request.parse("Plan Saturday in Portland, coffee. Starting at the old place. Starting at Laurelhurst Park.")
+        self.assertEqual(r["start_place"], "Laurelhurst Park")  # the latest answer wins
+        self.assertEqual(request.parse("Plan Saturday in Portland starting at 10am, coffee")["start_place"], None)
+
+    def test_R8_finish_time_and_limits(self):
+        r = request.parse(self.USER)
+        self.assertEqual((r["start_min"], r["end_min"], r["max_walk_km"]), (10 * 60, 15 * 60, 3.0))
+        r = request.parse("Plan Saturday in Portland starting at Laurelhurst Park, coffee, back by 2:30 pm, finish at 3pm")
+        self.assertEqual(r["start_min"], 10 * 60)  # "finish at 3pm" is not a start time
+        self.assertEqual(r["end_min"], 14 * 60 + 30)
+
     def test_R5_hill_preferences(self):
         for text in ("avoiding hills", "no hills please", "keep it flat"):
             r = request.parse("Plan Saturday in Portland, coffee and a park, " + text)
@@ -251,6 +276,221 @@ class AnyCityTests(unittest.TestCase):
 
     def test_W4_walking_limit_is_a_hard_limit(self):
         self.assertEqual(town_plans(self.BASE.replace("2 km", "0.5 km")), [])
+
+    def test_W5_finish_time_is_a_hard_limit(self):
+        plans = town_plans(self.BASE + ", finish no later than 11am")
+        self.assertTrue(plans)
+        self.assertTrue(all(routes.to_min(p["end"]) <= 11 * 60 for p in plans), [p["end"] for p in plans])
+        self.assertEqual(town_plans(self.BASE + ", back by 9:30am"), [])  # a cafe and a park can't fit in 30 min
+
+
+def flat_plan(km=2.0, minutes=25, climb=0):
+    return {"rank": 1, "depart": "10:00", "scores": {}, "stops": [{"name": "A", "category": "cafe"}],
+            "legs": [{"mode": "walk", "km": km, "min": minutes, "climb_m": climb}]}
+
+
+class FitnessTests(unittest.TestCase):
+    """K: steps, calories, BMI and backpack, and who gets to see them."""
+
+    def test_K1_steps_follow_distance_and_height(self):
+        tall, short = {"height_cm": 190}, {"height_cm": 155}
+        self.assertAlmostEqual(fitness.estimate(flat_plan(2.0), {"height_cm": 178})["steps"], 2000 / (1.78 * 0.414), delta=10)
+        self.assertGreater(fitness.estimate(flat_plan(), short)["steps"], fitness.estimate(flat_plan(), tall)["steps"])
+        self.assertAlmostEqual(fitness.estimate(flat_plan(4.0), tall)["steps"], 2 * fitness.estimate(flat_plan(2.0), tall)["steps"], delta=10)
+
+    def test_K2_calories_use_weight_and_backpack(self):
+        body = {"weight_kg": 78, "height_cm": 178}
+        # ACSM: (0.1 x 2000 m + 3.5 x 25 min) ml/kg x 78 kg / 1000 x 5 kcal/L = 112 kcal
+        self.assertEqual(fitness.estimate(flat_plan(), body)["kcal"], 112)
+        loaded = fitness.estimate(flat_plan(), dict(body, backpack_kg=10))
+        self.assertEqual(loaded["load_kg"], 88)
+        self.assertGreater(loaded["kcal"], 112)
+        self.assertNotIn("kcal", fitness.estimate(flat_plan(), {"height_cm": 178}))  # no weight, no calories
+
+    def test_K3_climbing_burns_more(self):
+        body = {"weight_kg": 78, "height_cm": 178}
+        flat, hilly = fitness.estimate(flat_plan(), body), fitness.estimate(flat_plan(climb=100), body)
+        self.assertEqual(hilly["kcal"] - flat["kcal"], 70)  # 1.8 x 100 m x 78 kg / 1000 x 5
+
+    def test_K4_bmi(self):
+        self.assertEqual(fitness.bmi({"weight_kg": 78, "height_cm": 178}), {"value": 24.6, "label": "healthy weight"})
+        self.assertEqual(fitness.bmi({"weight_kg": 95, "height_cm": 175})["label"], "obesity range")
+        self.assertIsNone(fitness.bmi({"weight_kg": 70}))
+
+    def test_K5_each_phone_shows_only_its_own_numbers(self):
+        me, ana = planner.load_profile("me")["body"], planner.load_profile("ana")["body"]
+        p = flat_plan()
+        mine = present.template([p], "Me", me)[1]
+        hers = present.template([p], "Ana", ana)[1]
+        self.assertIn("%d kcal" % fitness.estimate(p, me)["kcal"], mine)
+        self.assertIn("%d kcal" % fitness.estimate(p, ana)["kcal"], hers)
+        self.assertNotIn("%d kcal" % fitness.estimate(p, ana)["kcal"], mine)
+        # What Ana's agent shares with the planner never includes her body data.
+        self.assertNotIn("body", tests_shared_fields())
+
+
+def tests_shared_fields():
+    from tests.scenarios import SHARED_FIELDS
+    return SHARED_FIELDS
+
+
+class ClaudeParsingTests(unittest.TestCase):
+    """U: Claude's reading of a request is checked field by field; the rules fill any gap."""
+    TEXT = ("Plan Saturday starting at St Stephens Catholic Church in Portland, visit a coffee shop, a park and a "
+            "restaurant. Start time is 10am. Finish time is no later than 3pm. Must not walk more than 3km.")
+
+    def test_U1_checks_keep_claude_honest(self):
+        from planner import understand
+        good = {"city": "Portland", "start_place": "St Stephens Catholic Church", "start_time": "10:00",
+                "end_time": "15:00", "max_walk_km": 3, "day": "Saturday", "stops": ["cafe", "park", "food"],
+                "avoid_hills": False, "prefer_hills": False, "with_ana": False, "dog": False}
+        r = understand.merge(self.TEXT, good, request.parse(self.TEXT))
+        self.assertEqual((r["city"], r["start_place"], r["start_min"], r["end_min"], r["max_walk_km"]),
+                         ("Portland", "St Stephens Catholic Church", 600, 900, 3.0))
+        self.assertEqual(r["parsed_by"], "claude")
+        # An invented place, a bad time, an unknown stop: each falls back to the rules' answer.
+        bad = dict(good, start_place="Pioneer Courthouse Square", start_time="25:99", stops=["zoo"], city="Seattle")
+        r = understand.merge(self.TEXT, bad, request.parse(self.TEXT))
+        self.assertEqual(r["start_place"], "St Stephens Catholic Church")
+        self.assertEqual(r["city"], "Portland")
+        self.assertEqual(r["start_min"], 600)
+        self.assertEqual(r["categories"], ["cafe", "park", "food"])
+        # San Francisco is the built-in demo city.
+        sf = "Plan Saturday in San Francisco starting at Noe Valley, coffee"
+        self.assertIsNone(understand.merge(sf, dict(good, city="San Francisco", start_place="Noe Valley"),
+                                           request.parse(sf))["city"])
+
+    def test_U2_no_key_means_rules(self):
+        from planner import understand
+        old = os.environ.get("PLANNER_PARSER")
+        os.environ["PLANNER_PARSER"] = "rules"
+        try:
+            r = understand.understand(self.TEXT)
+        finally:
+            if old is None:
+                os.environ.pop("PLANNER_PARSER", None)
+            else:
+                os.environ["PLANNER_PARSER"] = old
+        self.assertEqual(r["parsed_by"], "rules")
+        self.assertEqual(r["start_place"], "St Stephens Catholic Church")
+
+
+class VenueFactsTests(unittest.TestCase):
+    """V: reading Keenable's prompted-fetch answers, and picking the venue's own page."""
+
+    def test_V1_reads_the_answer(self):
+        from planner import keenable
+        a = keenable.parse_facts("same_place: yes\nsaturday_hours: 06:30-20:00\ndogs: patio\nvegetarian: yes")
+        self.assertEqual(a, {"same_place": True, "hours": ("06:30", "20:00"), "dogs": "patio", "vegetarian": True})
+        a = keenable.parse_facts("same_place: yes\nsaturday_hours: 6:30am-8:00pm\ndogs: unknown\nvegetarian: unknown")
+        self.assertEqual((a["hours"], a["dogs"], a["vegetarian"]), (("06:30", "20:00"), None, None))
+        a = keenable.parse_facts("same_place: no\nsaturday_hours: closed\ndogs: no\nvegetarian: no")
+        self.assertEqual((a["same_place"], a["hours"], a["dogs"], a["vegetarian"]), (False, "closed", "no", False))
+
+    def test_V2_own_site_only_for_closed(self):
+        from planner import keenable
+        self.assertTrue(keenable.own_site("https://ritualcoffee.com/locations", "Ritual Coffee Roasters (Valencia)"))
+        self.assertFalse(keenable.own_site("https://la-taqueria.cafe-encore.com/", "La Taqueria"))
+        page = keenable.best_page([{"url": "https://www.yelp.com/x", "title": "Best tacos"},
+                                   {"url": "https://www.lataqueria.com/", "title": "Home"}], "La Taqueria")
+        self.assertEqual(page["url"], "https://www.lataqueria.com/")
+
+
+class DecisionTests(unittest.TestCase):
+    """J: the decision step ranks and explains; it can't pick outside the safe shortlist."""
+
+    def pool(self):
+        c = ctx("me", "ana", "biscuit", dog=True)
+        cands = {cat: search.load_seed(cat) for cat in ("cafe", "museum", "food", "beach")}
+        out = []
+        for fixed in all_branches(cands, c):
+            out += [("b", it) for it in routes.route_branch(fixed, cands, c)[0]]
+        return out, c
+
+    def test_J1_rules_choose_and_explain(self):
+        from planner import decide
+        pool, c = self.pool()
+        chosen, reasons = decide.by_rules(pool)
+        self.assertEqual([it["stops"] for _, it in chosen], [it["stops"] for _, it in routes.pick_diverse(pool)])
+        self.assertEqual(len(reasons), len(chosen))
+        self.assertIn("%d min" % chosen[0][1]["travel_min"], reasons[0])
+        self.assertIn("than plan 1", reasons[1])
+
+    def test_J2_bad_picks_and_subq_fall_back_to_rules(self):
+        from planner import decide
+        pool, c = self.pool()
+        shortlist = routes.pick_diverse(pool, n=decide.SHORTLIST)
+        chosen, reasons = decide.validate([{"id": 99, "reason": "x"}, {"id": 1, "reason": "Good."},
+                                           {"id": 1, "reason": "dup"}], shortlist, 3)
+        self.assertEqual((len(chosen), reasons), (1, ["Good."]))  # unknown and repeated ids dropped
+        with self.assertRaises(ValueError):
+            decide.validate([{"id": -1, "reason": "x"}], shortlist, 3)
+        saved = {k: os.environ.get(k) for k in ("PLANNER_DECIDER", "SUBQ_API_KEY")}
+        os.environ["PLANNER_DECIDER"] = "subq"
+        os.environ.pop("SUBQ_API_KEY", None)  # test the fallback without a key, even if .env has one
+        try:
+            chosen, reasons, by, note = decide.decide(pool, c)
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.assertEqual(by, "rules")
+        self.assertIn("SUBQ_API_KEY", note)  # no key: falls back to the rules and says why
+        self.assertTrue(chosen)
+
+    def test_J3_subq_request_and_ranking(self):
+        """The request follows SubQ's Decisions API; probabilities set the order."""
+        from planner import decide
+        pool, c = self.pool()
+        shortlist = routes.pick_diverse(pool, n=decide.SHORTLIST)
+        req = decide.subq_request(shortlist, c)
+        self.assertEqual(req["model"], "subq-snap-1.1")
+        q = req["questions"]["best_plan"]
+        self.assertEqual(q["type"], "choice")
+        self.assertTrue(2 <= len(q["criteria"]) <= 255)
+        self.assertEqual(sorted(q["criteria"]), sorted(req["state"]["candidates"]))
+        json_size = len(__import__("json").dumps(req))
+        self.assertLess(json_size, 100000)  # far under the 384K-token window
+        # A response shaped like the docs' example: answers -> best_plan -> probabilities.
+        fake = {"model": "subq-snap-1.1", "usage": {"input_tokens": 900, "output_tokens": 0},
+                "answers": {"best_plan": {"type": "choice", "choice": "p2", "confidence": 0.7,
+                                          "probabilities": {"p0": 0.1, "p1": 0.05, "p2": 0.7, "p3": 0.15}}}}
+        ranked = decide.subq_rank(fake, shortlist)
+        self.assertEqual([it for it, _ in ranked], [shortlist[2], shortlist[3], shortlist[0]])
+        with self.assertRaises(ValueError):
+            decide.subq_rank({"answers": {"best_plan": {"choice": "zz", "probabilities": {"zz": 1}}}}, shortlist)
+
+
+class StartPointTests(unittest.TestCase):
+    """Q: no exploration until the starting point is clear."""
+
+    def test_Q1_missing_start_means_asking(self):
+        for text in ("Plan Saturday in Portland Oregon, coffee and a park",
+                     "Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset"):
+            start, _, problem = planner.resolve_start(request.parse(text))
+            self.assertIsNone(start, text)
+            self.assertEqual(problem[0], "missing", text)
+            self.assertIn("Where should we start", problem[1])
+
+    def test_Q1b_demo_start_needs_no_lookup(self):
+        start, _, problem = planner.resolve_start(request.parse(
+            "Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset"))
+        self.assertIsNone(problem)
+        self.assertIs(start, routes.START)
+
+    def test_Q3_reply_continues_the_request(self):
+        import server
+        run = planner.Run()
+        run.state.update(needs_start=True, original="Plan Saturday in Portland Oregon, coffee and a park.")
+        action, text = server.interpret(run, "Me", "St Stephen's Catholic Church")
+        self.assertEqual(action, "plan")
+        r = request.parse(text)
+        self.assertEqual((r["city"], r["start_place"]), ("Portland Oregon", "St Stephen's Catholic Church"))
+        self.assertEqual(sorted(r["categories"]), ["cafe", "park"])
+        action, text = server.interpret(run, "Me", "starting at the Pearl District.")
+        self.assertEqual(request.parse(text)["start_place"], "the Pearl District")
+        # A brand-new request replaces the pending one instead of being glued onto it.
+        action, text = server.interpret(run, "Me", "Plan Sunday in Seattle starting at Pike Place Market, coffee")
+        self.assertEqual(request.parse(text)["city"], "Seattle")
 
 
 if __name__ == "__main__":

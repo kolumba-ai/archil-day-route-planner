@@ -2,9 +2,38 @@
   "id": "me",
   "name": "Me",
   "kind": "person",
-  "walking": { "max_km": 9, "hills": "ok", "pace_kmh": 4.8, "rest_every_min": 90 },
-  "food": { "diet": "omnivore", "loves": ["burritos", "coffee"], "avoids": [] },
-  "activities": { "museum_max_min": 120, "likes": ["views", "science"], "dislikes": ["crowds"] },
-  "weather": { "cold_tolerance": "medium", "wind_tolerance": "high" },
-  "owns_pet": "biscuit"
+  "walking": {
+    "max_km": 9,
+    "hills": "ok",
+    "pace_kmh": 4.8,
+    "rest_every_min": 90
+  },
+  "food": {
+    "diet": "omnivore",
+    "loves": [
+      "burritos",
+      "coffee"
+    ],
+    "avoids": []
+  },
+  "activities": {
+    "museum_max_min": 120,
+    "likes": [
+      "views",
+      "science"
+    ],
+    "dislikes": [
+      "crowds"
+    ]
+  },
+  "weather": {
+    "cold_tolerance": "medium",
+    "wind_tolerance": "high"
+  },
+  "owns_pet": "biscuit",
+  "body": {
+    "weight_kg": 78,
+    "height_cm": 178,
+    "backpack_kg": 3
+  }
 }

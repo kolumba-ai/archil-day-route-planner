@@ -70,6 +70,7 @@ def combine(profiles, request, start=None, conditions=None):
             "conditions": conditions or load_conditions(),
             "start": start or START,
             "start_min": request.get("start_min", START_TIME),
+            "end_min": request.get("end_min"),  # latest finish, if the request gave one
             "categories": request.get("categories") or list(DEFAULT_CATEGORIES),
             "city": request.get("city")}
 
@@ -200,6 +201,8 @@ def simulate(stops, ctx):
     walk_km = round(walk_km, 2)
     if walk_km > lim["max_km"] + 1e-9:
         violations.append("walks %.1f km; the limit is %s km" % (walk_km, ("%g" % lim["max_km"])))
+    if ctx.get("end_min") and t > ctx["end_min"]:
+        violations.append("finishes at %s, after %s" % (hhmm(t), hhmm(ctx["end_min"])))
     if lim["avoid_hills"] and not lim.get("prefer_hills") and climb > lim.get("hills_max_m", HILLY_M):
         violations.append("climbs %d m; too hilly for the group" % climb)
 

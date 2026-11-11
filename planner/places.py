@@ -21,7 +21,7 @@ import urllib.request
 
 UA = "group-day-planner-demo"
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(os.path.dirname(HERE), "data", "places-cache.json")
+CACHE_FILE = os.path.join(os.environ.get("PLANNER_CACHE_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"), "places-cache.json")
 _lock = threading.Lock()
 _venues_lock = threading.Lock()
 _nominatim_last = [0.0]
@@ -85,17 +85,29 @@ def _cached(key, fn, ttl=30 * 24 * 3600):
 
 # ---------------------------------------------------------------- geocoding
 
-def geocode(query):
-    """Return {"name", "lat", "lon", "display"} for a place, or None."""
-    def fetch():
-        with _lock:  # Nominatim's usage policy: at most one request per second
+def _nominatim_get(url, tries=4):
+    """Nominatim, politely: one request per second from this process, and on "429 Too many
+    requests" wait (longer each time) and try again."""
+    for attempt in range(tries):
+        with _lock:
             wait = 1.1 - (time.time() - _nominatim_last[0])
             if wait > 0:
                 time.sleep(wait)
             _nominatim_last[0] = time.time()
+        try:
+            return _http(url, timeout=30)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == tries - 1:
+                raise
+            time.sleep(5 * (attempt + 1))
+
+
+def geocode(query):
+    """Return {"name", "lat", "lon", "display"} for a place, or None."""
+    def fetch():
         url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
             {"q": query, "format": "jsonv2", "limit": 1})
-        res = _http(url)
+        res = _nominatim_get(url)
         if not res:
             return None
         r = res[0]
@@ -111,6 +123,10 @@ def spellings(place):
     out.append(p)
     out.append(re.sub(r"\bSt\.?\s", "Saint ", p))
     out.append(re.sub(r"\bSt\.?\s", "St. ", p))
+    # Possessive typed without the apostrophe: "St Stephens" -> "Saint Stephen".
+    q = re.sub(r"\b(St\.?|Saint)\s+(\w{3,}?)s\b", r"Saint \2", p)
+    if q != p:
+        out.append(q)
     seen, uniq = set(), []
     for v in out:
         if v.lower() not in seen:
@@ -119,14 +135,14 @@ def spellings(place):
     return uniq
 
 
-def find_start(place, city):
-    """Locate the starting place (trying several spellings), else the city center."""
+def find_start(place, city, city_center_fallback=True):
+    """Locate the starting place (trying several spellings); optionally else the city center."""
     if place:
         for v in spellings(place):
             hit = geocode("%s, %s" % (v, city) if city else v)
             if hit:
                 return dict(hit, name=v if v == place else hit["name"], found_as=hit["name"])
-    if city:
+    if city and city_center_fallback:
         hit = geocode(city)
         if hit:
             return dict(hit, name="%s (city center)" % city)
@@ -229,14 +245,9 @@ def _nominatim_elements(category, center, radius_m):
     out = []
     for word in NOMINATIM_WORDS[category]:
         def fetch(word=word):
-            with _lock:  # Nominatim's usage policy: at most one request per second
-                wait = 1.1 - (time.time() - _nominatim_last[0])
-                if wait > 0:
-                    time.sleep(wait)
-                _nominatim_last[0] = time.time()
             url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
                 {"q": word, "format": "jsonv2", "limit": 40, "bounded": 1, "extratags": 1, "viewbox": box})
-            return _http(url, timeout=30)
+            return _nominatim_get(url)
         for r in _cached("nom:%s:%s" % (word, box), fetch, ttl=7 * 24 * 3600) or []:
             if (r.get("category"), r.get("type")) not in NOMINATIM_KINDS[category] or not r.get("name"):
                 continue
