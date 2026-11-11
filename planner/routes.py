@@ -72,15 +72,26 @@ def climb_m(a, b):
     return total, crossed
 
 
-def leg(a, b, pace_kmh):
-    """Walk if reasonable, otherwise ride (Muni or rideshare)."""
-    d = km(a, b) * 1.3  # streets are not straight lines
+RIDE_OVERHEAD_MIN = 8  # waiting for Muni or a car, and walking to and from it
+
+
+def leg(a, b, pace_kmh, streets=None):
+    """Walk if reasonable, otherwise ride (Muni or rideshare).
+
+    With a street matrix (streets.build_matrix) distances follow real streets and paths,
+    and rides use real driving times; without one, straight-line distance x 1.3.
+    """
+    ka, kb = "%.5f,%.5f" % (a["lat"], a["lon"]), "%.5f,%.5f" % (b["lat"], b["lon"])
+    on_streets = bool(streets) and kb in streets["walk_km"].get(ka, {})
+    d = streets["walk_km"][ka][kb] if on_streets else km(a, b) * 1.3
     up, hills = climb_m(a, b)
     walk_min = d / pace_kmh * 60 + up / 10  # +1 min per 10 m climbed
     if walk_min <= 35:
-        return {"mode": "walk", "km": round(d, 2), "min": round(walk_min), "climb_m": up, "hills": hills}
-    return {"mode": "ride", "km": round(d, 2), "min": round(12 + d * 3), "climb_m": 0, "hills": [],
-            "walk_km": 0.3}
+        return {"mode": "walk", "km": round(d, 2), "min": round(walk_min), "climb_m": up, "hills": hills,
+                "streets": on_streets}
+    ride_min = (streets["car_min"][ka][kb] + RIDE_OVERHEAD_MIN) if on_streets else 12 + d * 3
+    return {"mode": "ride", "km": round(d, 2), "min": round(ride_min), "climb_m": 0, "hills": [],
+            "walk_km": 0.3, "streets": on_streets}
 
 
 def hhmm(m):
@@ -105,7 +116,7 @@ def simulate(stops, ctx):
     legs, timeline, violations, notes = [], [], [], []
     walk_km = climb = 0
     for cat, v in stops:
-        lg = leg(here, v, lim["pace_kmh"])
+        lg = leg(here, v, lim["pace_kmh"], ctx.get("streets"))
         legs.append(lg)
         t += lg["min"]
         walk_km += lg["km"] if lg["mode"] == "walk" else lg.get("walk_km", 0)
@@ -151,7 +162,8 @@ def simulate(stops, ctx):
     if wx["fog"]:
         notes.append("Fog expected at %s around %s" % (beach["name"], timeline[-1]["arrive"]))
 
-    it = {"stops": timeline, "legs": legs, "walk_km": walk_km, "climb_m": climb,
+    it = {"depart": hhmm(START_TIME), "start": START["name"], "stops": timeline, "legs": legs,
+          "walk_km": walk_km, "climb_m": climb,
           "travel_min": sum(lg["min"] for lg in legs), "idle_min": idle,
           "end": hhmm(t), "violations": violations, "notes": notes, "weather_at_beach": wx}
     score_itinerary(it, stops, ctx, sunset)
@@ -160,6 +172,11 @@ def simulate(stops, ctx):
 
 def clip(x):
     return max(0.0, min(1.0, x))
+
+
+TRAVEL_WEIGHT = 0.004  # score lost per minute of travel: an extra hour costs 0.24
+MAX_EXTRA_TRAVEL_MIN = 30  # alternatives may take at most this much longer to get around than plan 1
+MIN_DIFFERENT_STOPS = 2  # each alternative differs from every other plan in at least this many stops
 
 
 def group_score(vals):
@@ -180,7 +197,6 @@ def score_itinerary(it, stops, ctx, sunset):
             parts.append(1 - 0.3 * clip(it["climb_m"] / 400))
         rides = sum(1 for lg in it["legs"] if lg["mode"] == "ride")
         parts.append(1 - clip(0.15 * rides))  # people asked for a walking day
-        parts.append(1 - clip((it["travel_min"] - 40) / 80.0))  # time spent getting around
         parts.append(1 - clip(it["idle_min"] / 150.0))  # hours of nothing before sunset
         crowd = 0
         for cat, v in stops:
@@ -216,8 +232,12 @@ def score_itinerary(it, stops, ctx, sunset):
                 parts.append(clip(s))
         per[p["name"]] = round(clip(sum(parts) / len(parts) - crowd), 2)
     vals = list(per.values())
-    group = 0.0 if it["violations"] else group_score(vals)
+    happiness = group_score(vals)
+    # Minimizing time spent getting around is a main goal: each minute of travel (walking
+    # or riding) costs TRAVEL_WEIGHT, so a plan that zigzags across the city ranks low.
+    group = 0.0 if it["violations"] else max(0.001, happiness - TRAVEL_WEIGHT * it["travel_min"])
     it["scores"] = per
+    it["happiness"] = round(happiness, 3)
     it["group_score"] = round(group, 3)
     if lim["dog"]:
         it["scores"]["Biscuit"] = "happy" if not any("dog" in x for x in it["violations"]) else "left out"
@@ -229,28 +249,34 @@ def stop_names(it):
     return {s["category"]: s["name"] for s in it["stops"]}
 
 
-def pick_diverse(plans, n=3, penalty=0.05):
-    """Judge: best plans that differ in museum and beach, preferring new cafes and food too.
+def pick_diverse(plans, n=3, penalty=0.03):
+    """Judge: the best plan, then up to n-1 real alternatives.
 
-    plans: list of (branch_name, itinerary). Each repeated cafe or food stop costs `penalty`.
+    plans: list of (branch_name, itinerary). Plan 1 is the highest score (happiness minus
+    travel time). An alternative must differ from every chosen plan in at least
+    MIN_DIFFERENT_STOPS stops and take at most MAX_EXTRA_TRAVEL_MIN longer to get around
+    than plan 1, so no alternative zigzags across the city. Each stop it shares with an
+    already chosen plan costs `penalty`. Returns fewer than n plans rather than a bad one.
     """
-    chosen = []
-    pool = list(plans)
-    while pool and len(chosen) < n:
+    pool = sorted(plans, key=lambda p: -p[1]["group_score"])
+    if not pool:
+        return []
+    chosen = [pool[0]]
+    limit = pool[0][1]["travel_min"] + MAX_EXTRA_TRAVEL_MIN
+    cats = ("cafe", "museum", "food", "beach")
+    while len(chosen) < n:
         used = [stop_names(it) for _, it in chosen]
 
-        def adjusted(item):
+        def shared(item, u):
             s = stop_names(item[1])
-            repeats = sum(s[c] == u[c] for u in used for c in ("cafe", "food"))
-            return item[1]["group_score"] - penalty * repeats
+            return sum(s.get(c) == u.get(c) for c in cats)
 
-        pool = [p for p in pool if not any(stop_names(p[1])["museum"] == u["museum"]
-                                           or stop_names(p[1])["beach"] == u["beach"] for u in used)]
-        if not pool:
+        ok = [p for p in pool if p not in chosen and p[1]["travel_min"] <= limit
+              and all(len(cats) - shared(p, u) >= MIN_DIFFERENT_STOPS for u in used)]
+        if not ok:
             break
-        best = max(pool, key=adjusted)
+        best = max(ok, key=lambda p: p[1]["group_score"] - penalty * sum(shared(p, u) for u in used))
         chosen.append(best)
-        pool.remove(best)
     return chosen
 
 

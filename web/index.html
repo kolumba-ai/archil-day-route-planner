@@ -113,7 +113,7 @@
         <div class="stat"><b id="s-feasible">0</b><span>plans that fit everyone</span></div>
       </div>
       <div class="legend">
-        <span><i style="background:var(--accent)"></i>checkpoint</span>
+        <span><i style="background:var(--accent);width:8px;height:8px;transform:rotate(45deg);margin:0 6px 0 2px"></i>checkpoint</span>
         <span><i style="background:#868e96"></i>search branch</span>
         <span><i style="background:var(--ok)"></i>route branch, plans found</span>
         <span><i style="background:var(--bad)"></i>route branch, nothing fits</span>
@@ -337,19 +337,32 @@ function renderPlans() {
     b.textContent = 'Plan ' + p.rank + (decided === p.rank ? ' ✓' : '');
     b.onclick = () => { selected = i; renderPlans(); }; pills.appendChild(b);
   });
-  if (plans[selected]) { const s = document.createElement('span'); s.className = 'badge'; s.innerHTML = scoreText(plans[selected]) + ' ' + voteChips(plans[selected].rank); pills.appendChild(s); }
+  if (plans[selected]) {
+    const p = plans[selected], s = document.createElement('span'); s.className = 'badge';
+    s.innerHTML = p.travel_min + ' min getting around · ' + scoreText(p) + ' ' + voteChips(p.rank) +
+      ' · <span style="color:#d9480f">━ walk</span> <span style="color:#5f3dc4">┅ ride</span>';
+    pills.appendChild(s);
+  }
   drawMap();
   const box = $('routes'); box.innerHTML = '';
   if (!plans.length) { box.innerHTML = '<div class="empty">' + (run ? 'Planning…' : 'Plans appear here.') + '</div>'; return; }
   plans.forEach(p => {
     const d = document.createElement('div'); d.className = 'plan' + (decided === p.rank ? ' decided' : '');
-    let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">group score ' + p.group_score.toFixed(2) +
-            ' · ' + p.walk_km + ' km walking · ' + p.climb_m + ' m climb · done ' + p.end + '</span>' + voteChips(p.rank) + '</h3>';
-    h += '<table><tr><th>Time</th><th>Stop</th><th>Getting there</th></tr>';
+    let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
+            p.walk_km + ' km walking · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
+    // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
+    const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️'}[s.category] || '📍');
+    let from = (p.start || 'Start (Noe Valley)'), at = p.depart || '10:00';
+    h += '<table><tr><th style="width:96px">Time</th><th>Stop or way there</th></tr>';
+    h += '<tr><td>' + at + '</td><td>🕙 Leave ' + esc(from) + '</td></tr>';
     p.stops.forEach((s, k) => {
-      const l = p.legs[k];
-      h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + esc(s.name) + '<div class="leg">' + s.category + '</div></td><td class="leg">' +
-           (l.mode === 'walk' ? l.min + ' min walk, ' + l.km + ' km' + (l.climb_m ? ', ' + l.climb_m + ' m climb' : '') : l.min + ' min ride (Muni or car)') + '</td></tr>';
+      const l = p.legs[k], walk = l.mode === 'walk';
+      const leaveAt = k === 0 ? at : p.stops[k - 1].leave;
+      h += '<tr class="leg"><td class="leg">' + leaveAt + '</td><td class="leg">' + (walk ? '🚶 Walk' : '🚌 Ride') + ' from ' + esc(from.replace(/^Start \((.*)\)$/, '$1')) +
+           ' to ' + esc(s.name) + ' · ' + l.min + ' min · ' + l.km + ' km' + (walk && l.climb_m ? ' · ' + l.climb_m + ' m climb' : '') +
+           (walk ? '' : ' (Muni or car)') + '</td></tr>';
+      h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + ICON(s) + ' <b>' + esc(s.name) + '</b></td></tr>';
+      from = s.name;
     });
     h += '</table><div class="note">' + scoreText(p) + '</div>';
     if (p.notes.length) h += '<div class="note">' + p.notes.map(esc).join(' · ') + '</div>';
@@ -363,7 +376,16 @@ function drawMap() {
   layer.clearLayers();
   const p = plans[selected]; if (!p) return;
   const pts = [[37.7502, -122.4337]].concat(p.stops.map(s => [s.lat, s.lon]));
-  L.polyline(pts, {color:'#d9480f', weight:4}).addTo(layer);
+  // Each leg follows the streets when the router gave a path; walks solid, rides dashed.
+  p.legs.forEach((l, k) => {
+    const line = l.path && l.path.length > 1 ? l.path : [pts[k], pts[k + 1]];
+    L.polyline(line, l.mode === 'walk'
+      ? {color:'#d9480f', weight:4}
+      : {color:'#5f3dc4', weight:4, dashArray:'8 8'}).addTo(layer)
+      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' from ' + (k === 0 ? 'Noe Valley' : p.stops[k - 1].name) + ' to ' +
+                   p.stops[k].name + ' · ' + l.min + ' min · ' + l.km + ' km' + (l.path ? '' : ' (straight line: no street route)'));
+    line.forEach(pt => pts.push(pt));
+  });
   L.circleMarker(pts[0], {radius:5, color:'#555'}).addTo(layer).bindTooltip('Start (Noe Valley) 10:00');
   p.stops.forEach((s, k) => L.marker([s.lat, s.lon], {icon: L.divIcon({className:'', html:
     '<div style="background:#d9480f;color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-weight:600;font-size:12px;border:2px solid #fff">' + (k+1) + '</div>'})})
@@ -377,7 +399,10 @@ function scheduleTech() { if (!techTimer) techTimer = setTimeout(() => { techTim
 function kb(b) { return b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : (b/1e3).toFixed(0) + ' KB'; }
 
 function renderTech() {
-  const t0 = events.length ? events[0].t : 0;
+  // The time axis starts at the first disk operation (checkpoint or branch), not at the first
+  // event, so waiting for Ana's answer doesn't push every bar to the right.
+  const firstDisk = events.find(e => e.type === 'checkpoint' || e.type === 'branch' || e.type === 'sandbox_base');
+  const t0 = firstDisk ? Math.min(firstDisk.t, firstDisk.start || firstDisk.t) : (events.length ? events[0].t : 0);
   const branches = events.filter(e => e.type === 'branch');
   const sbx = branches.filter(e => e.sandbox);
   const done = {}; events.filter(e => e.type === 'route_done').forEach(e => done[e.branch] = e);
@@ -412,7 +437,9 @@ function renderTech() {
   let tmax = now; rows.forEach(r => r.bars.forEach(b => { if (b.e) tmax = Math.max(tmax, b.e); }));
   // Draw at the panel's real pixel width so labels stay readable (scrolls if narrower than 520 px).
   const W = Math.max(520, box.clientWidth || 760);
-  const span = Math.max(tmax - t0, 0.5), L0 = 130, R = 16, rowH = 9, gap = 3, top = 28;
+  // Label column just wide enough for the longest row name (about 6 px per character at 10 px).
+  const L0 = 12 + 6 * Math.max(11, ...rows.map(r => r.label.length));
+  const span = Math.max(tmax - t0, 0.5), R = 16, rowH = 9, gap = 3, top = 28;
   const X = t => L0 + (t - t0) / span * (W - L0 - R);
   const H = top + rows.length * (rowH + gap) + 24;
   let s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" font-size="10" font-family="system-ui">';

@@ -79,11 +79,13 @@ def dog_ana_allow(r):
             [p["walk_km"] for p in plans])
     r.check("C4", "Hills", all(p["climb_m"] <= 200 for p in plans), [p["climb_m"] for p in plans])
     r.check("C5", "Hours", all(not p["violations"] for p in plans))
-    museums = [p["stops"][1]["name"] if p["stops"][1]["category"] == "museum" else p["stops"][2]["name"] for p in plans]
-    beaches = [p["stops"][-1]["name"] for p in plans]
-    other = [(p["stops"][0]["name"], next(s["name"] for s in p["stops"] if s["category"] == "food")) for p in plans]
-    r.check("D5", "3 different plans", len(plans) == 3 and len(set(museums)) == 3 and len(set(beaches)) == 3
-            and len(set(other)) > 1, "cafe+food pairs: %s" % other)
+    stops = [{s["category"]: s["name"] for s in p["stops"]} for p in plans]
+    diffs = [sum(a[c] != b[c] for c in a) for i, a in enumerate(stops) for b in stops[i + 1:]]
+    r.check("D5", "3 different plans", len(plans) == 3 and min(diffs) >= routes.MIN_DIFFERENT_STOPS,
+            "stops that differ between each pair of plans: %s" % diffs)
+    travel = [p["travel_min"] for p in plans]
+    r.check("D6", "Little time getting around", plans and max(travel) <= travel[0] + routes.MAX_EXTRA_TRAVEL_MIN,
+            "travel minutes per plan: %s" % travel)
     cps = [e["name"] for e in ev(run, "checkpoint")]
     r.check("E1", "Checkpoints exist", set(cps) >= {"combined", "candidates", "plan-1", "plan-2", "plan-3"}, cps)
     br_root = os.path.join(outing_dir(run), "branches")
@@ -100,10 +102,20 @@ def dog_ana_allow(r):
             "answered at event %s, shard at %s" % (answered_at, shard_seq))
     r.check("G3", "Fields shared", set(ana_shard(run).keys()) == SHARED_FIELDS, sorted(ana_shard(run)))
     r.check("H1", "Speed (offline < 10 s)", secs < 10 and plans, "%.1f s" % secs)
-    me = [e["text"] for e in ev(run, "message") if e["phone"] == "me"]
+    me = [e for e in ev(run, "message") if e["phone"] == "me"]
     ana = [e for e in ev(run, "message") if e["phone"] == "ana"]
-    r.check("H2", "Both phones", any("plans for Saturday" in t for t in me)
-            and any(e.get("ask") for e in ana) and any("Plans for Saturday" in e["text"] for e in ana))
+    me_plans = [e for e in me if e.get("msg_kind") == "plans"]
+    ana_plans = [e for e in ana if e.get("msg_kind") == "plans"]
+    # Each phone: an intro, one message per plan naming all its stops, then the question.
+    def well_formed(msgs):
+        parts = [e["part"] for e in msgs]
+        per_plan = [e["text"] for e in msgs if e["part"] == "plan"]
+        return (parts == ["intro"] + ["plan"] * len(plans) + ["question"]
+                and all(s["name"] in t for p, t in zip(plans, per_plan) for s in p["stops"]))
+    r.check("H2", "Both phones get the plans", plans and well_formed(me_plans) and well_formed(ana_plans)
+            and any(e.get("ask") for e in ana),
+            "messages per phone: %d and %d (intro + %d plans + question); written by %s"
+            % (len(me_plans), len(ana_plans), len(plans), sorted({e.get("written_by") for e in me_plans + ana_plans})))
 
 
 def ana_decline(r):
@@ -197,6 +209,30 @@ def live_search(r):
     r.check("F2", "Live search (%s)" % expected, not bad, bad or "verified with sources: " + ", ".join(summary))
 
 
+def street_routing(r):
+    """F4: real street routing (OSRM) gives every leg a street distance and a street path."""
+    os.environ["PLANNER_ROUTING"] = "osrm"
+    run, secs, _ = run_planner(FULL, "allow", timeout=180)
+    st = (ev(run, "streets") or [{}])[0]
+    plans = plans_of(run)
+    legs = [l for p in plans for l in p["legs"]]
+    no_path = [l for l in legs if not l.get("path") or len(l["path"]) < 3]
+    on_streets = all(l.get("streets") for l in legs)
+    # A street route can't be shorter than the straight line, nor wildly longer in a city grid.
+    odd = []
+    for p in plans:
+        here = routes.START
+        for l, s in zip(p["legs"], p["stops"]):
+            straight = routes.km(here, s)
+            if l["mode"] == "walk" and straight > 0.2 and not (0.95 * straight <= l["km"] <= 2.5 * straight):
+                odd.append("%s %.2f km vs %.2f straight" % (s["name"][:20], l["km"], straight))
+            here = s
+    r.check("F4", "Street routing (OSRM)", st.get("ok") and plans and on_streets and not no_path and not odd,
+            "%s; %d plans, %d legs, legs without a street path: %d, odd distances: %s; %.1f s"
+            % (st.get("error") or "%d places in %s ms" % (st.get("places", 0), st.get("ms")), len(plans), len(legs),
+               len(no_path), odd[:2], secs))
+
+
 def sandbox_routes(r):
     """E8: the route phase on Archil sandboxes gives the same plans as the local route phase."""
     if not os.environ.get("ARCHIL_API_KEY"):
@@ -220,6 +256,7 @@ def sandbox_routes(r):
 
 
 SCENARIOS = {
+    "street-routing": (street_routing, "after-search"),
     "sandbox-routes": (sandbox_routes, "after-search"),
     "dog-ana-allow": (dog_ana_allow, "after-search"),
     "ana-decline": (ana_decline, "after-search"),

@@ -4,6 +4,7 @@ Your Mac has Python 3.9; the SDK needs 3.10+. The exec microVM has 3.10, so scri
 drive sandboxes run there. The SDK is installed into a venv on the disk once and reused.
 """
 import base64
+import gzip
 import os
 
 from . import archil_api
@@ -29,8 +30,15 @@ def run_python(script, files=None, timeout_note=""):
     placed next to it. Returns the exec result dict (stdout, stderr, exitCode, timing)."""
     disk = os.environ["ARCHIL_DISK_ID"]
     parts = [SETUP, "mkdir -p /tmp/job && cd /tmp/job && "]
-    for name, data in (files or {}).items():
-        parts.append("echo %s | base64 -d > %s && " % (base64.b64encode(data).decode(), name))
-    parts.append("echo %s | base64 -d > job.py && " % base64.b64encode((PRELUDE + script).encode()).decode())
+    # Archil's exec API takes at most 100 KB of command, so files travel gzip-compressed.
+    for name, data in list((files or {}).items()) + [("job.py", (PRELUDE + script).encode())]:
+        packed = base64.b64encode(gzip.compress(data, 9)).decode()
+        parts.append("echo %s | base64 -d | gunzip > %s && " % (packed, name))
     parts.append("export ARCHIL_DISK_ID=%s; /mnt/archil/.sdk/bin/python -u job.py" % disk)
-    return archil_api.exec_on_disk(disk, "".join(parts), with_key=True)
+    command = "".join(parts)
+    if len(command) > MAX_COMMAND:
+        raise archil_api.ArchilError("job is %d KB; Archil's exec limit is %d KB" % (len(command) // 1024, MAX_COMMAND // 1024))
+    return archil_api.exec_on_disk(disk, command, with_key=True)
+
+
+MAX_COMMAND = 100 * 1024 - 2048  # leave room for the exported settings

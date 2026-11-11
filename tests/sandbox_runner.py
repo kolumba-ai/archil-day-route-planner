@@ -58,7 +58,7 @@ def scenario(name):
     t_fork = T()
     sb = base.fork(name="gdp-%s-%s" % (RUN, name))
     fork_s = T() - t_fork
-    env = ["PLANNER_DATA=%s/data" % APP]
+    env = ["PLANNER_DATA=%s/data" % APP, "PLANNER_ROUTING=straight"]  # F4 turns street routing back on
     if parent == "after-search":
         env.append("PLANNER_CANDIDATES=%s/candidates.json" % APP)
     if name == "ana-timeout":
@@ -68,7 +68,7 @@ def scenario(name):
     if name == "live-search" and opts.get("keenable"):
         env.append("PLANNER_SEARCH=keenable")
     cmd = ("cd {app} && echo {n} > whoami.txt && touch .start && {env} python3 -m tests.scenarios {n}; "
-           "echo WHOAMI $(cat whoami.txt); echo OUTINGS $(ls data 2>/dev/null | wc -l); "
+           "echo WHOAMI $(cat whoami.txt); echo OUTINGS $(ls data 2>/dev/null | grep -c '^outing-'); "
            "echo WRITTEN $(find {app} -newer .start -type f -not -path '*/branches/*' "
            "-not -path '*/checkpoints/*' -printf '%s\\n' | awk '{{s+=$1}} END {{print s+0}}')"
            ).format(app=APP, n=name, env=" ".join(env))

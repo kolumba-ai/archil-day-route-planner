@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from . import routes, search
+from . import present, routes, search, streets
 from .disk import OutingDisk
 
 HERE = os.path.dirname(__file__)
@@ -200,6 +200,21 @@ def plan(run, text):
 def route_and_finish(run, req, disk, ctx, candidates):
     """Phases 3 and 4: simulate routes (sandboxes or local branches), judge, report."""
     work = disk.work
+    # Real walking distances and driving times between every pair of places, fetched once
+    # so the route branches (and sandboxes) never call the router themselves.
+    ctx.pop("streets", None)
+    if streets.enabled():
+        t = time.time()
+        points = [routes.START] + [v for vs in candidates.values() for v in vs]
+        try:
+            ctx["streets"] = streets.build_matrix(points)
+            disk.write_json(work, "streets.json", ctx["streets"], compact=True)
+            run.emit("streets", ok=True, places=len(ctx["streets"]["walk_km"]), ms=round((time.time() - t) * 1000),
+                     source=ctx["streets"]["source"])
+        except Exception as e:
+            run.emit("streets", ok=False, error=str(e)[:120])
+            run.say("me", "Street routing is unavailable (%s); estimating distances in straight lines." % str(e)[:80],
+                    agent=True)
     pairs = [(m, b) for m in candidates["museum"] for b in candidates["beach"]]
     chosen = None
     if os.environ.get("PLANNER_ROUTES") == "sandboxes":
@@ -287,6 +302,8 @@ def routes_locally(run, disk, ctx, candidates, pairs):
 
 def finish(run, req, disk, work, chosen):
     plans = [dict(it, branch=name, rank=i) for i, (name, it) in enumerate(chosen, 1)]
+    if plans and run.state.get("ctx", {}).get("streets"):
+        streets.add_paths(plans, routes.START)  # street-following lines for the map
     disk.write_json(work, "plans.json", plans)
     run.state.update(plans=plans, votes={})
     run.emit("plans", plans=plans)
@@ -298,21 +315,14 @@ def finish(run, req, disk, work, chosen):
     if not plans:
         run.say("me", "No plan fits everyone's limits. Try fewer stops or a shorter day.", agent=True)
     else:
-        lines = ["Here are %d plans for Saturday:" % len(plans)]
-        for p in plans:
-            scores = ", ".join("%s %s" % (k, ("%d/10" % round(v * 10)) if isinstance(v, float) else v)
-                               for k, v in p["scores"].items())
-            lines.append("%d. %s. %.1f km walking, %d m climb, done by %s. %s."
-                         % (p["rank"], " → ".join(s["name"] for s in p["stops"]),
-                            p["walk_km"], p["climb_m"], p["end"], scores))
-        notes = sorted({n for p in plans for n in p["notes"]})
-        if notes:
-            lines.append("Notes: " + "; ".join(notes[:3]) + ".")
-        run.say("me", "\n".join(lines), agent=True)
-        if "ana" in req["with"]:
-            run.say("ana", "\n".join(["Plans for Saturday with your friend:"] + lines[1:]), agent=True)
-        for phone in ("me", "ana") if "ana" in req["with"] else ("me",):
-            run.say(phone, "Which plan do you prefer? Pick one below, or ask for a change.", agent=True)
+        # Each phone gets its own message, written by Claude when available (both in parallel).
+        readers = [("me", "Me")] + ([("ana", "Ana")] if "ana" in req["with"] else [])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            msgs = list(pool.map(lambda r: present.messages(plans, r[1]), readers))
+        for (phone, _), (texts, source) in zip(readers, msgs):
+            for i, text in enumerate(texts):  # intro, one per plan, then the question
+                part = "intro" if i == 0 else "question" if i == len(texts) - 1 else "plan"
+                run.say(phone, text, agent=True, msg_kind="plans", part=part, written_by=source)
     run.emit("done", ok=True)
 
 

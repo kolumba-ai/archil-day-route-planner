@@ -149,7 +149,9 @@ def main():
             f.write(name)
         # Tests use fixed seed data and local routes, whatever .env says; the live-search and
         # sandbox-routes scenarios opt back in below and in tests/scenarios.py.
-        env = dict(os.environ, PLANNER_DATA=os.path.join(path, "data"), PLANNER_SEARCH="seed")
+        env = dict(os.environ, PLANNER_DATA=os.path.join(path, "data"), PLANNER_SEARCH="seed",
+                   PLANNER_ROUTING="straight",  # street-routing (F4) switches it back on itself
+                   PLANNER_PRESENT="template")  # no Claude calls in tests
         env.pop("PLANNER_ROUTES", None)
         env.pop("PLANNER_PROFILES_DIR", None)
         if parent == "after-search":
@@ -187,7 +189,7 @@ def main():
             if f.read() != r["name"]:
                 crosstalk.append(r["name"] + ": marker overwritten")
         data = os.path.join(r["path"], "data")
-        mine = sorted(os.listdir(data)) if os.path.isdir(data) else []
+        mine = sorted(d for d in os.listdir(data) if d.startswith("outing-")) if os.path.isdir(data) else []
         expected = 2 if r["name"] == "sandbox-routes" else 1  # E8 plans twice: local, then sandboxes
         if len(mine) > expected:
             crosstalk.append("%s: %d outing folders" % (r["name"], len(mine)))

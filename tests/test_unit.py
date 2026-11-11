@@ -109,6 +109,21 @@ class ScoreTests(unittest.TestCase):
         clear = routes.simulate(day(beach="Crissy Field"), c)
         self.assertLess(foggy["scores"]["Ana"], clear["scores"]["Ana"])
 
+    def test_D6_minimal_travel(self):
+        """Plan 1 takes (nearly) the least travel of every feasible itinerary; no alternative zigzags."""
+        c = ctx("me", "ana", "biscuit", dog=True)
+        cands = {cat: search.load_seed(cat) for cat in ("cafe", "museum", "food", "beach")}
+        pool, every = [], []
+        for m in cands["museum"]:
+            for b in cands["beach"]:
+                pool += [("b", it) for it in routes.route_branch(m, b, cands, c)[0]]
+                every += routes.route_branch(m, b, cands, c, keep=10 ** 6)[0]
+        fastest = min(it["travel_min"] for it in every)
+        plans = [it for _, it in routes.pick_diverse(pool, 3)]
+        self.assertLessEqual(plans[0]["travel_min"], fastest + 10, "plan 1 %d min vs fastest %d" % (plans[0]["travel_min"], fastest))
+        for p in plans:
+            self.assertLessEqual(p["travel_min"], plans[0]["travel_min"] + routes.MAX_EXTRA_TRAVEL_MIN)
+
     def test_D4_scores_spread(self):
         """Known to fail today: scores bunch up at 9-10/10."""
         c = ctx("me", "ana", "biscuit", dog=True)
