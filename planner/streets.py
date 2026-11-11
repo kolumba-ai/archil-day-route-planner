@@ -170,6 +170,8 @@ def add_paths(plans, start):
         for leg, stop in zip(p["legs"], p["stops"]):
             jobs.append((leg, here, stop))
             here = stop
+        if p.get("return_leg"):  # the walk back to the start
+            jobs.append((p["return_leg"], here, start))
     down = threading.Event()
 
     def fetch(job):

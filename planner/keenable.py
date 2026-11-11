@@ -69,7 +69,7 @@ def search(query, n=5, tries=4):
     for attempt in range(tries):
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with PACER, urllib.request.urlopen(req, timeout=25) as r:
+            with PACER, urllib.request.urlopen(req, timeout=CALL_TIMEOUT_S) as r:
                 return json.load(r).get("results", [])
         except urllib.error.HTTPError as e:
             if e.code != 429 or attempt == tries - 1:
@@ -187,7 +187,7 @@ def fetch_facts(url, name, city="San Francisco"):
     req = urllib.request.Request(KEYED_FETCH + "?" + q, headers={"X-API-Key": key, "X-Keenable-Title": TITLE})
     for attempt in range(3):
         try:
-            with PACER, urllib.request.urlopen(req, timeout=40) as r:
+            with PACER, urllib.request.urlopen(req, timeout=CALL_TIMEOUT_S) as r:
                 return json.load(r).get("content", "")
         except urllib.error.HTTPError as e:
             if e.code != 429 or attempt == 2:
@@ -345,7 +345,25 @@ def _verify(venue, category, city="San Francisco"):
     return v
 
 
-def verify_all(venues, category, workers=None, city="San Francisco"):
+CALL_TIMEOUT_S = 10  # one Keenable search or prompted fetch; a hung page shouldn't stall the plan
+STEP_DEADLINE_S = float(os.environ.get("KEENABLE_DEADLINE_S", "15"))  # one whole search step
+
+
+def verify_all(venues, category, workers=None, city="San Francisco", deadline_s=None):
+    """Check every venue in parallel, but stop waiting after the step's deadline: a venue not
+    checked in time keeps its OpenStreetMap/seed facts with a note. Its check keeps running in
+    the background and is cached, so the next request gets it instantly."""
+    from concurrent.futures import wait
     workers = workers or (12 if _keyed() else 3)  # PACER keeps the request rate legal
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(lambda v: verify(v, category, city), venues))
+    deadline_s = STEP_DEADLINE_S if deadline_s is None else deadline_s
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = [pool.submit(verify, v, category, city) for v in venues]
+    wait(futures, timeout=deadline_s)
+    out = []
+    for v, f in zip(venues, futures):
+        if f.done() and not f.exception():
+            out.append(f.result())
+        else:
+            out.append(dict(v, verify_error="not checked within %gs" % deadline_s))
+    pool.shutdown(wait=False)  # don't block on the stragglers
+    return out

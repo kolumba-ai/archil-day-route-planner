@@ -100,7 +100,9 @@ def search_city(category, context, mode):
     from . import places
     from .request import DAYS
     day_index = DAYS.index(context["request"].get("day", "Saturday").lower())
-    venues = places.find_venues(category, context["start"], search_radius_m(context), day_index=day_index)
+    req = context["request"]
+    venues = places.find_venues(category, context["start"], search_radius_m(context), day_index=day_index,
+                                cuisines=req.get("cuisines") or None, food_truck=bool(req.get("food_truck")))
     source = "OpenStreetMap"
     if venues and mode == "keenable":
         from . import keenable

@@ -352,9 +352,10 @@ def ask_for_start(r):
     first_work = min([types.index(t) for t in ("share_request", "branch", "search_done") if t in types] or [10 ** 6])
     plans = plans_of(run)
     r.check("Q4", "Map moves to the start before any planning",
-            action == "plan" and place_at < first_work and plans and (ev(run, "place")[0]["start"]).startswith("Saint Stephen"),
-            "reply became: %r; place event #%s, first planning event #%s; %d plans"
-            % (text[-60:], place_at, first_work, len(plans)))
+            action == "plan" and place_at < first_work and plans
+            and routes.km(ev(run, "place")[0], {"lat": 45.5145, "lon": -122.6197}) < 1.0,
+            "reply became: %r; start %s; place event #%s, first planning event #%s; %d plans"
+            % (text[-60:], (ev(run, "place") or [{}])[0].get("start"), place_at, first_work, len(plans)))
 
 
 USER_PORTLAND = ("Plan Saturday starting at St Stephens Catholic Church in Portland, visit a coffee shop, a park and a "
@@ -386,11 +387,11 @@ def replay_portland(r):
 
 
 def claude_parsing(r):
-    """L1: Claude Haiku reads the tricky phrasings that tripped the rules."""
+    """L1: the model (OpenAI by default) reads the tricky phrasings that tripped the rules."""
     from planner import understand
     os.environ.pop("PLANNER_PARSER", None)
     if not understand.available():
-        r.check("L1", "Claude parses requests", None, "SKIPPED: needs ANTHROPIC_API_KEY in .env")
+        r.check("L1", "Model parses requests", None, "SKIPPED: needs OPENAI_API_KEY or ANTHROPIC_API_KEY in .env")
         r.rows[-1]["ok"] = None
         return
     cases = [
@@ -401,15 +402,25 @@ def claude_parsing(r):
         ("Saturday with Ana, Portland Oregon. Let's meet at 4055 SE Salmon St and grab coffee then hit a park, "
          "nothing hilly, home by 2", {"start_place": "4055 SE Salmon St", "avoid_hills": True,
                                       "categories": ["cafe", "park"], "with": ["ana"]}),
+        (KOREAN_TRUCK, {"city": "Portland", "start_place": "St Stephens Catholic Church", "start_min": 600,
+                        "end_min": 900, "categories": ["cafe", "park", "food"], "cuisines": ["korean", "japanese"],
+                        "food_truck": True, "return_to_start": True, "with": ["ana"]}),
     ]
     bad = []
     for text, want in cases:
         got = understand.understand(text)
         diffs = {k: (got.get(k), v) for k, v in want.items()
                  if (round(got.get(k) or 0, 1) != round(v, 1) if isinstance(v, float) else got.get(k) != v)}
-        if got["parsed_by"] != "claude" or diffs:
+        if got["parsed_by"] not in ("openai", "claude") or diffs:
             bad.append("%s...: %s %s" % (text[:30], got["parsed_by"], diffs))
-    r.check("L1", "Claude parses requests", not bad, "; ".join(bad) or "%d phrasings read correctly" % len(cases))
+    reply = understand.read_reply("let's go with the second one", "Which plan, 1, 2 or 3?")
+    if understand.provider() == "openai" and (reply or {}).get("plan") != 2:
+        bad.append("pick 'the second one' read as %s" % reply)
+    start = understand.read_reply("Let's start at 4055 SE Salmon St please", "Where should we start from?")
+    if understand.provider() == "openai" and "4055 SE Salmon St" not in (start or {}).get("start_place", ""):
+        bad.append("start reply read as %s" % start)
+    r.check("L1", "Model parses requests", not bad, "; ".join(bad) or "%s: %d phrasings and 2 replies read correctly"
+            % (understand.LABEL[understand.provider()], len(cases)))
 
 
 def subq_decides(r):
@@ -429,7 +440,40 @@ def subq_decides(r):
                                                              (plans[0].get("why") if plans else "")[:120]))
 
 
+KOREAN_TRUCK = ("Propose a Saturday plan with Ana starting at St Stephens Catholic Church in Portland that includes a "
+                "visit to a coffee place, a dog-friendly park, and a food truck with Korean or Japanese food. Starting "
+                "at 10am and must be back at the place of departure by 3pm.")
+
+
+def korean_food_truck(r):
+    """M4: the request that came back with Pepino's (Mexican, not a truck), replayed."""
+    from planner import places
+    os.environ["PLANNER_ROUTING"] = "osrm"
+    run, secs, _ = run_planner(KOREAN_TRUCK, "allow", timeout=300)
+    plans = plans_of(run)
+    place = (ev(run, "place") or [{}])[0]
+    cands = {v["name"]: v for v in (run.state.get("candidates") or {}).get("food", [])}
+    problems = []
+    if not place or routes.km(place, {"lat": 45.5145, "lon": -122.6197}) > 1.0:
+        problems.append("start not Saint Stephen, Portland OR: %s" % place.get("start"))
+    for p in plans:
+        food = next(s["name"] for s in p["stops"] if s["category"] == "food")
+        v = cands.get(food, {})
+        if not set(v.get("cuisine") or []) & {"korean", "japanese", "sushi", "ramen"}:
+            problems.append("plan %d food %s is %s" % (p["rank"], food, v.get("cuisine")))
+        if not p.get("return_leg") or routes.to_min(p["end"]) > 15 * 60:
+            problems.append("plan %d: back at start %s by %s" % (p["rank"], bool(p.get("return_leg")), p["end"]))
+    trucks = [p for p in plans if cands.get(next(s["name"] for s in p["stops"] if s["category"] == "food"), {}).get("food_truck")]
+    if not plans:
+        problems.append("no plans: %s" % [e["text"][:70] for e in ev(run, "message")][-1:])
+    r.check("M4", "Korean or Japanese food truck, back by 3pm", not problems,
+            "; ".join(problems[:3]) or "%d plans, %d with a food truck; food: %s; back by %s; %.0f s" % (
+                len(plans), len(trucks), [next(s["name"] for s in p["stops"] if s["category"] == "food") for p in plans],
+                [p["end"] for p in plans], secs))
+
+
 SCENARIOS = {
+    "korean-food-truck": (korean_food_truck, "test-base"),
     "subq-decides": (subq_decides, "after-search"),
     "claude-parsing": (claude_parsing, "test-base"),
     "replay-portland": (replay_portland, "test-base"),

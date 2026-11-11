@@ -297,8 +297,8 @@ function handle(e) {
       $('backend').textContent += ' · Plans chosen by ' + e.by + (e.note ? ' (' + e.note.slice(0, 60) + ')' : '');
       break;
     case 'request':
-      $('backend').textContent += ' · Request read by ' + (e.parsed_by === 'claude' ? 'Claude Haiku 5.5' : 'rules') +
-        (e.parse_error ? ' (Claude failed: ' + e.parse_error.slice(0, 40) + ')' : '');
+      $('backend').textContent += ' · Request read by ' + (e.parsed_by === 'openai' ? 'OpenAI ' + (e.parser_model || '') : e.parsed_by === 'claude' ? 'Claude Haiku 5.5' : 'rules') +
+        (e.parse_error ? ' (model failed: ' + e.parse_error.slice(0, 40) + ')' : '');
       break;
     case 'place': {  // the start is known: move the map there before any route is planned
       startPlace = e;
@@ -367,6 +367,12 @@ function renderPlans() {
       h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + ICON(s) + ' <b>' + esc(s.name) + '</b></td></tr>';
       from = s.name;
     });
+    if (p.return_leg) {  // "back at the place of departure"
+      const l = p.return_leg, last = p.stops[p.stops.length - 1];
+      h += '<tr class="leg"><td class="leg">' + last.leave + '</td><td class="leg">' + (l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') +
+           ' back to ' + esc(p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km</td></tr>';
+      h += '<tr><td>' + p.end + '</td><td>🏁 <b>Back at ' + esc(p.start || 'the start') + '</b></td></tr>';
+    }
     h += '</table>' + (p.why ? '<div class="note">💡 ' + esc(p.why) + '</div>' : '') + '<div class="note">' + scoreText(p) + '</div>';
     if (p.notes.length) h += '<div class="note">' + p.notes.map(esc).join(' · ') + '</div>';
     h += '<div class="note">from branch <code>' + esc(p.branch) + '</code></div>';
@@ -396,6 +402,12 @@ function drawMap() {
                    p.stops[k].name + ' · ' + l.min + ' min · ' + l.km + ' km' + (l.path ? '' : ' (straight line: no street route)'));
     line.forEach(pt => pts.push(pt));
   });
+  if (p.return_leg) {  // the walk back to the start, dotted
+    const l = p.return_leg, last = p.stops[p.stops.length - 1];
+    const line = l.path && l.path.length > 1 ? l.path : [[last.lat, last.lon], start];
+    L.polyline(line, {color: l.mode === 'walk' ? '#d9480f' : '#5f3dc4', weight: 3, dashArray: '2 6'}).addTo(layer)
+      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' back to ' + (p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km');
+  }
   L.circleMarker(start, {radius:6, color:'#555', fillOpacity:.9}).addTo(layer).bindTooltip('Start: ' + (p.start || 'Noe Valley') + ' · ' + (p.depart || '10:00'));
   p.stops.forEach((s, k) => L.marker([s.lat, s.lon], {icon: L.divIcon({className:'', html:
     '<div style="background:#d9480f;color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-weight:600;font-size:12px;border:2px solid #fff">' + (k+1) + '</div>'})})

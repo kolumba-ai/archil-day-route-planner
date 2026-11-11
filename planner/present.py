@@ -63,6 +63,8 @@ def template(plans, reader, body=None):
         lines = ["%s Plan %d · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= 3 else p["rank"], p["rank"],
                                                    p.get("depart", "10:00"))]
         lines += ["%s %s" % (_stop_icon(s), s["name"]) for s in p["stops"]]
+        if p.get("return_leg"):
+            lines.append("🏁 back at the start by %s" % p.get("end", ""))
         fit = fitness.estimate(p, body)  # the reader's own steps and calories
         lines.append("👟 ~{:,} steps".format(fit["steps"]) + (" · 🔥 ~%d kcal" % fit["kcal"] if "kcal" in fit else ""))
         out.append("\n".join(lines))
@@ -135,6 +137,8 @@ def decision(plan, rank, why, body=None):
     """The final decision, with the same icons as the plans, plus the reader's own steps."""
     lines = ["✅ Decided: plan %s (%s)." % (number(rank), why), "🕙 leave at %s" % plan.get("depart", "10:00")]
     lines += ["%s %s · %s" % (_stop_icon(s), s["name"], s["arrive"]) for s in plan["stops"]]
+    if plan.get("return_leg"):
+        lines.append("🔙 back at %s" % plan.get("start", "the start"))
     fit = fitness.estimate(plan, body)
     lines.append("🏁 back by %s · 👟 ~{:,} steps".format(fit["steps"]) % plan.get("end", "")
                  + (" · 🔥 ~%d kcal" % fit["kcal"] if "kcal" in fit else ""))

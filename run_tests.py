@@ -28,7 +28,7 @@ from tests.scenarios import SCENARIOS
 ROOT = os.path.dirname(os.path.abspath(__file__))
 KEEP = "--keep" in sys.argv
 # Scenarios that call Nominatim, Overpass, Open-Meteo or OSRM: run one at a time.
-LIVE_MAP_SCENARIOS = {"replay-portland", "ask-start", "city-portland", "city-chicago", "hills-both-ways", "street-routing"}
+LIVE_MAP_SCENARIOS = {"korean-food-truck", "replay-portland", "ask-start", "city-portland", "city-chicago", "hills-both-ways", "street-routing"}
 MANUAL = [
     ("H3", "Map draws the selected plan", "check in the browser"),
     ("H4", "Layout at 1280x800", "check in the browser (known failing: map overlaps plans)"),

@@ -17,6 +17,18 @@ CATEGORIES = [
     ("beach", r"\b(beach(es)?|ocean|sunset)\b"),
 ]
 DEFAULT_CATEGORIES = ["cafe", "museum", "food", "beach"]  # the San Francisco demo's day
+
+# Cuisines people ask for, mapped to OpenStreetMap's cuisine values.
+CUISINES = {
+    "korean": "korean", "japanese": "japanese", "sushi": "sushi", "ramen": "ramen", "mexican": "mexican",
+    "tacos?": "mexican", "burritos?": "mexican", "thai": "thai", "chinese": "chinese", "italian": "italian",
+    "pizza": "pizza", "indian": "indian", "vietnamese": "vietnamese", "pho": "vietnamese", "vegan": "vegan",
+    "vegetarian food": "vegetarian", "burgers?": "burger", "bbq|barbecue": "barbecue", "mediterranean": "mediterranean",
+    "greek": "greek", "french": "french", "ethiopian": "ethiopian", "seafood": "seafood",
+}
+FOOD_TRUCK = r"\b(food (trucks?|carts?|pods?)|street food)\b"
+RETURN_TO_START = (r"\b(back (at|to) (the )?(place of departure|start(ing point)?|church|where we (started|began))|"
+                   r"return(ing)? to (the )?(start|starting point|place of departure)|round[- ]trip|loop back)\b")
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 AVOID_HILLS = r"\b(avoid(ing)? (the )?hills?|no hills|without hills|flat (route|walk)|not hilly|stay(ing)? flat|keep it flat)\b"
@@ -45,7 +57,8 @@ def parse(text):
     # the text before reading the start time, so "finish at 3pm" isn't taken as the start.
     end_min = None
     low_start = low
-    for rx in (END_TIME + TIME, r"(?:no later than|not later than)\s*" + TIME):
+    for rx in (r"\b(?:back|return\w*)\b[^.!?]{0,60}?\b(?:by|before|no later than|not later than)\s*" + TIME,
+               END_TIME + TIME, r"(?:no later than|not later than)\s*" + TIME):
         for m in list(re.finditer(rx, low_start)):  # every finish phrase; the earliest time wins
             t = _clock(*m.groups()[-3:])
             end_min = t if end_min is None else min(end_min, t)
@@ -103,6 +116,9 @@ def parse(text):
         "start_place": start_place,
         "start_min": start_min,
         "end_min": end_min,  # latest time to finish, or None
+        "cuisines": [c for w, c in CUISINES.items() if re.search(r"\b(%s)\b" % w, low)],
+        "food_truck": bool(re.search(FOOD_TRUCK, low)),
+        "return_to_start": bool(re.search(RETURN_TO_START, low)),
         "max_walk_km": max_walk_km,
         "avoid_hills": bool(re.search(AVOID_HILLS, low)),
         "prefer_hills": bool(re.search(PREFER_HILLS, low)) and not re.search(AVOID_HILLS, low),

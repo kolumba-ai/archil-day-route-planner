@@ -30,7 +30,8 @@ OSM_TAGS = {
     "cafe": ['nwr["amenity"="cafe"]["name"]'],
     "park": ['nwr["leisure"="park"]["name"]', 'nwr["leisure"="garden"]["name"]["access"!="private"]'],
     "museum": ['nwr["tourism"="museum"]["name"]', 'nwr["tourism"="gallery"]["name"]'],
-    "food": ['nwr["amenity"="restaurant"]["name"]', 'nwr["amenity"="fast_food"]["name"]'],
+    "food": ['nwr["amenity"="restaurant"]["name"]', 'nwr["amenity"="fast_food"]["name"]',
+             'nwr["amenity"="food_court"]["name"]', 'nwr["street_vendor"="yes"]["name"]'],
     "beach": ['nwr["natural"="beach"]["name"]'],
 }
 DEFAULT_HOURS = {"cafe": ("07:00", "18:00"), "park": ("05:00", "22:00"), "museum": ("10:00", "17:00"),
@@ -39,8 +40,8 @@ DEFAULT_HOURS = {"cafe": ("07:00", "18:00"), "park": ("05:00", "22:00"), "museum
 
 # ---------------------------------------------------------------- http + cache
 
-def _http(url, data=None, timeout=40):
-    headers = {"User-Agent": UA}
+def _http(url, data=None, timeout=40, extra_headers=None):
+    headers = dict({"User-Agent": UA}, **(extra_headers or {}))
     try:
         req = urllib.request.Request(url, data=data, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -85,9 +86,24 @@ def _cached(key, fn, ttl=30 * 24 * 3600):
 
 # ---------------------------------------------------------------- geocoding
 
+OVERPASS_CH = "https://api.overpass.ch/v1"  # hosted OpenStreetMap service (overpass.ch); needs OVERPASS_CH_KEY
+
+
+def _ch_key():
+    return os.environ.get("OVERPASS_CH_KEY", "").strip()
+
+
 def _nominatim_get(url, tries=4):
-    """Nominatim, politely: one request per second from this process, and on "429 Too many
-    requests" wait (longer each time) and try again."""
+    """Nominatim-style search. With OVERPASS_CH_KEY, overpass.ch's Nominatim-compatible endpoint
+    first (300 requests/minute, key in a header, never in the URL); otherwise, or if it fails,
+    public Nominatim, politely: one request per second, backing off on "429 Too many requests"."""
+    key = _ch_key()
+    if key:
+        try:
+            ch_url = url.replace("https://nominatim.openstreetmap.org/", OVERPASS_CH + "/nominatim/")
+            return _http(ch_url, timeout=20, extra_headers={"X-API-Key": key})
+        except Exception:
+            pass  # fall back to public Nominatim below
     for attempt in range(tries):
         with _lock:
             wait = 1.1 - (time.time() - _nominatim_last[0])
@@ -135,13 +151,34 @@ def spellings(place):
     return uniq
 
 
+NEAR_CITY_KM = 30
+
+
 def find_start(place, city, city_center_fallback=True):
-    """Locate the starting place (trying several spellings); optionally else the city center."""
+    """Locate the starting place, trying several spellings. A match far from the named city
+    (a geocoder can drop the city: "St Stephens Catholic Church, Portland" -> Skipton, England)
+    is skipped while another spelling may land in the city; if none does, the far match is
+    returned so the planner asks instead of planning there."""
+    from .routes import km
+    center = None
+    if city:
+        try:
+            center = geocode(city)
+        except Exception:
+            center = None
+    far = None
     if place:
         for v in spellings(place):
             hit = geocode("%s, %s" % (v, city) if city else v)
-            if hit:
-                return dict(hit, name=v if v == place else hit["name"], found_as=hit["name"])
+            if not hit:
+                continue
+            found = dict(hit, name=v if v == place else hit["name"], found_as=hit["name"])
+            if center and km(hit, center) > NEAR_CITY_KM:
+                far = far or found
+                continue
+            return found
+        if far:
+            return far
     if city and city_center_fallback:
         hit = geocode(city)
         if hit:
@@ -195,6 +232,13 @@ def _overpass(query):
     refuse bursts, so calls from this process go one at a time."""
     data = urllib.parse.urlencode({"data": query}).encode()
     last = None
+    key = _ch_key()
+    if key:  # overpass.ch answers in about a second; the public servers are the fallback
+        try:
+            return _http(OVERPASS_CH + "/interpreter", data=data, timeout=40,
+                         extra_headers={"X-API-Key": key}).get("elements", [])
+        except Exception as e:
+            last = e
     with _overpass_lock:
         for attempt in range(4):
             url = OVERPASS[attempt % len(OVERPASS)]
@@ -222,7 +266,7 @@ def _category_of(tags):
         return "park"
     if tags.get("tourism") in ("museum", "gallery"):
         return "museum"
-    if tags.get("amenity") in ("restaurant", "fast_food"):
+    if tags.get("amenity") in ("restaurant", "fast_food", "food_court") or tags.get("street_vendor") == "yes":
         return "food"
     if tags.get("natural") == "beach":
         return "beach"
@@ -233,17 +277,47 @@ NOMINATIM_WORDS = {"cafe": ["cafe", "coffee"], "park": ["park", "garden"], "muse
                    "food": ["restaurant", "fast food"], "beach": ["beach"]}
 NOMINATIM_KINDS = {"cafe": {("amenity", "cafe")}, "park": {("leisure", "park"), ("leisure", "garden")},
                    "museum": {("tourism", "museum"), ("tourism", "gallery")},
-                   "food": {("amenity", "restaurant"), ("amenity", "fast_food")}, "beach": {("natural", "beach")}}
+                   "food": {("amenity", "restaurant"), ("amenity", "fast_food"), ("amenity", "food_court")},
+                   "beach": {("natural", "beach")}}
+
+# Words that, in a name, show a cuisine even when the cuisine tag is missing.
+CUISINE_NAME_WORDS = {"korean": ["korean", "kimchi", "bibimbap", "bulgogi", "seoul"],
+                      "japanese": ["japanese", "sushi", "ramen", "izakaya", "teriyaki", "udon", "bento"],
+                      "sushi": ["sushi"], "ramen": ["ramen"], "mexican": ["taqueria", "taco", "burrito", "mexican"],
+                      "thai": ["thai"], "vietnamese": ["pho", "banh mi", "vietnamese"], "pizza": ["pizza"],
+                      "indian": ["indian", "curry", "tandoor"], "chinese": ["chinese", "dim sum", "dumpling"]}
 
 
-def _nominatim_elements(category, center, radius_m):
+def cuisine_of(tags):
+    """The cuisines a place serves: its OpenStreetMap cuisine tag, else words in its name."""
+    tagged = {c.strip().lower() for c in (tags.get("cuisine") or "").split(";") if c.strip()}
+    name = (tags.get("name") or "").lower()
+    named = {c for c, words in CUISINE_NAME_WORDS.items() if any(w in name for w in words)}
+    return tagged | named
+
+
+def matches_cuisine(tags, wanted):
+    """True if the place serves one of the wanted cuisines (sushi and ramen count as Japanese)."""
+    have = cuisine_of(tags)
+    if "sushi" in have or "ramen" in have:
+        have |= {"japanese"}
+    return bool(have & set(wanted))
+
+
+def is_food_truck(tags):
+    name = (tags.get("name") or "").lower()
+    return (tags.get("street_vendor") == "yes" or tags.get("amenity") == "food_court"
+            or any(w in name for w in ("truck", "cart", "food pod", "carts")))
+
+
+def _nominatim_elements(category, center, radius_m, words=None):
     """Places of one category in a box around the start, from Nominatim (fast, includes
     opening hours). Returned in the same shape as Overpass elements."""
     d_lat = radius_m / 111000.0
     d_lon = d_lat / max(0.2, __import__("math").cos(__import__("math").radians(center["lat"])))
     box = "%f,%f,%f,%f" % (center["lon"] - d_lon, center["lat"] + d_lat, center["lon"] + d_lon, center["lat"] - d_lat)
     out = []
-    for word in NOMINATIM_WORDS[category]:
+    for word in (words or NOMINATIM_WORDS[category]):
         def fetch(word=word):
             url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
                 {"q": word, "format": "jsonv2", "limit": 40, "bounded": 1, "extratags": 1, "viewbox": box})
@@ -257,16 +331,37 @@ def _nominatim_elements(category, center, radius_m):
     return out
 
 
-def find_venues(category, center, radius_m, limit=8, day_index=5):
+def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None, food_truck=False):
     """Named places of one category within radius_m of center, nearest first.
-    Nominatim first (fast); Overpass only if Nominatim finds nothing."""
+    Nominatim first (fast); Overpass only if Nominatim finds nothing.
+
+    For food, `cuisines` (e.g. ["korean", "japanese"]) keeps only places whose OpenStreetMap
+    cuisine tag or name matches: never a stand-in from another cuisine. `food_truck` puts
+    food trucks and carts first."""
     from .routes import km
 
-    elements = [e for e in _nominatim_elements(category, center, radius_m)
-                if km(e, center) * 1000 <= radius_m * 1.05]
+    words = None
+    if category == "food" and (cuisines or food_truck):
+        words = ["%s restaurant" % c for c in cuisines or []] + list(cuisines or [])
+        for c in cuisines or []:  # dish and style words find places whose cuisine tag is missing
+            words += [w for w in CUISINE_NAME_WORDS.get(c, []) if w not in words]
+        if food_truck:
+            words += ["food truck", "food cart"] + ["%s food truck" % c for c in cuisines or []]
+    elements = []
+    if _ch_key():  # one fast Overpass query with full tags (cuisine included) for every stop type
+        try:
+            with _venues_lock:  # the search branches run in parallel; fetch the shared query once
+                elements = [e for e in _all_elements(center, radius_m) if _category_of(e.get("tags", {})) == category]
+        except Exception:
+            elements = []
     if not elements:
-        with _venues_lock:  # the search branches run in parallel; fetch the shared query once
+        elements = [e for e in _nominatim_elements(category, center, radius_m, words)
+                    if km(e, center) * 1000 <= radius_m * 1.05]
+    if not elements and not _ch_key():
+        with _venues_lock:
             elements = [e for e in _all_elements(center, radius_m) if _category_of(e.get("tags", {})) == category]
+    if category == "food" and cuisines:
+        elements = [e for e in elements if matches_cuisine(e.get("tags", {}), cuisines)]
     venues, seen = [], set()
     for e in elements:
         tags = e.get("tags", {})
@@ -287,13 +382,15 @@ def find_venues(category, center, radius_m, limit=8, day_index=5):
              "hours_known": hours is not None, "dogs": dogs, "dogs_known": dog is not None,
              "vegetarian_ok": tags.get("diet:vegetarian", "yes") != "no",
              "tags": [t for t in (tags.get("cuisine", "").split(";") + [category]) if t],
+             "cuisine": sorted(cuisine_of(tags)), "food_truck": is_food_truck(tags),
              "source": "https://www.openstreetmap.org/%s/%s" % (e["type"], e["id"])}
         if category == "museum":
             v["kind"] = "museum"
         if category == "beach":
             v["area"] = "all"
         venues.append(v)
-    venues.sort(key=lambda v: km(v, center))
+    # Nearest first; when food trucks were asked for, trucks and carts come before restaurants.
+    venues.sort(key=lambda v: (not (food_truck and v.get("food_truck")), km(v, center)))
     return venues[:limit]
 
 

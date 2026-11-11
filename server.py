@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 os.environ.setdefault("PLANNER_PROFILES_DIR",
                       os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "profiles"))
 
-from planner import planner  # noqa: E402
+from planner import planner, understand  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 API_VERSION = 3  # bump when the page needs new endpoints; the page checks it (web/index.html)
@@ -29,6 +29,9 @@ def interpret(run, who, text):
     if who == "Me" and run is not None and run.state.get("needs_start") and not fresh:
         # The answer to "Where should we start from?": add it to the original request.
         place = re.sub(r"^(?:let'?s\s+)?(?:start(?:ing)?\s+)?(?:at|from|in)?\s*", "", text.strip(), flags=re.I).rstrip(".!")
+        ai = understand.read_reply(text, "Where should we start from?")
+        if ai and ai.get("start_place"):
+            place = ai["start_place"].rstrip(".!")
         return "plan", "%s. Starting at %s." % (run.state["original"].rstrip(". "), place)
     if who == "Me" and (not has_plans or fresh):
         return "plan", text
@@ -42,6 +45,9 @@ def interpret(run, who, text):
     m = re.fullmatch(r"(?:plan\s*)?#?\s*([1-9])\s*[.!]?", low)
     if m and 1 <= int(m.group(1)) <= n:
         return "vote", int(m.group(1))
+    ai = understand.read_reply(text, "Which plan, %s?" % choices)  # "the second one", "plan two works"
+    if ai and 1 <= int(ai.get("plan") or 0) <= n:
+        return "vote", int(ai["plan"])
     return "hint", "Just reply with the plan number: %s." % choices
 
 

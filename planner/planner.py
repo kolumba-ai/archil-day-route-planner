@@ -267,8 +267,12 @@ def plan(run, text):
             run.say("me", "The map service didn't answer (%s). Please try again in a minute." % failed[0][15:],
                     agent=True)
         else:
+            what = " or ".join(missing)
+            if "food" in missing and req.get("cuisines"):
+                what = what.replace("food", "%s food%s" % (" or ".join(c.capitalize() for c in req["cuisines"]),
+                                                           " (truck or restaurant)" if req.get("food_truck") else ""))
             run.say("me", "I couldn't find any %s within reach of %s. Try a longer walk or other stops."
-                    % (" or ".join(missing), ctx["start"]["name"]), agent=True)
+                    % (what, ctx["start"]["name"]), agent=True)
         run.emit("done", ok=False)
         return
     if ctx.get("city"):  # hills from real terrain: elevation of the start and every candidate
@@ -418,7 +422,8 @@ def finish(run, req, disk, work, chosen):
              for i, (name, it) in enumerate(chosen, 1)]
     if plans and run.state.get("ctx", {}).get("streets"):
         streets.add_paths(plans, run.state["ctx"]["start"])  # street-following lines for the map
-        straight = sum(1 for p in plans for l in p["legs"] if not l.get("path"))
+        straight = sum(1 for p in plans for l in p["legs"] + ([p["return_leg"]] if p.get("return_leg") else [])
+                       if not l.get("path"))
         if straight:
             run.say("me", "The street routing services are busy right now, so the map shows %d of the legs as "
                           "straight lines. Walking times still use street distances." % straight, agent=True)

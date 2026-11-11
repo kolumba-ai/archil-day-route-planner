@@ -3,6 +3,8 @@ import copy
 import os
 import unittest
 
+os.environ.setdefault("PLANNER_PARSER", "rules")  # unit tests never call OpenAI or Claude
+
 from planner import fitness, planner, present, request, routes, search
 
 FERRY = {"name": "Ferry Building", "lat": 37.7955, "lon": -122.3937}
@@ -210,6 +212,18 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(r["start_min"], 10 * 60)  # "finish at 3pm" is not a start time
         self.assertEqual(r["end_min"], 14 * 60 + 30)
 
+    KOREAN = ("Propose a Saturday plan with Ana starting at St Stephens Catholic Church in Portland that includes a visit "
+              "to a coffee place, a dog-friendly park, and a food truck with Korean or Japanese food. Starting at 10am "
+              "and must be back at the place of departure by 3pm.")
+
+    def test_R9_cuisine_food_truck_and_return(self):
+        r = request.parse(self.KOREAN)
+        self.assertEqual((r["start_place"], r["city"], r["start_min"], r["end_min"]),
+                         ("St Stephens Catholic Church", "Portland", 600, 900))
+        self.assertEqual(r["categories"], ["cafe", "park", "food"])
+        self.assertEqual(r["cuisines"], ["korean", "japanese"])
+        self.assertTrue(r["food_truck"] and r["return_to_start"])
+
     def test_R5_hill_preferences(self):
         for text in ("avoiding hills", "no hills please", "keep it flat"):
             r = request.parse("Plan Saturday in Portland, coffee and a park, " + text)
@@ -276,6 +290,28 @@ class AnyCityTests(unittest.TestCase):
 
     def test_W4_walking_limit_is_a_hard_limit(self):
         self.assertEqual(town_plans(self.BASE.replace("2 km", "0.5 km")), [])
+
+    def test_W6_walk_back_to_the_start_counts(self):
+        base = self.BASE.replace("2 km", "3 km")  # the walk back adds distance
+        one_way = town_plans(base)[0]
+        round_trip = town_plans(base + ", back at the place of departure by 1pm")[0]
+        # with the 2 km limit, the same round trip is too long: the way back counts
+        self.assertEqual(town_plans(self.BASE + ", back at the place of departure by 1pm"), [])
+        self.assertIsNone(one_way["return_leg"])
+        back = round_trip["return_leg"]
+        self.assertGreater(back["km"], 0)
+        self.assertAlmostEqual(round_trip["walk_km"], sum(l["km"] for l in round_trip["legs"]) + back["km"], places=1)
+        self.assertGreater(routes.to_min(round_trip["end"]), routes.to_min(round_trip["stops"][-1]["leave"]))
+        self.assertLessEqual(routes.to_min(round_trip["end"]), 13 * 60)
+
+    def test_W7_cuisine_and_food_trucks(self):
+        from planner import places
+        pepinos = {"name": "Pepino's", "amenity": "fast_food", "cuisine": "mexican"}
+        self.assertFalse(places.matches_cuisine(pepinos, ["korean", "japanese"]))
+        self.assertFalse(places.is_food_truck(pepinos))
+        self.assertTrue(places.matches_cuisine({"name": "Mio Sushi", "cuisine": "sushi"}, ["japanese"]))
+        self.assertTrue(places.matches_cuisine({"name": "Seoul Kitchen"}, ["korean"]))  # untagged, named
+        self.assertTrue(places.is_food_truck({"name": "Fomo Chicken", "street_vendor": "yes", "cuisine": "korean"}))
 
     def test_W5_finish_time_is_a_hard_limit(self):
         plans = town_plans(self.BASE + ", finish no later than 11am")
@@ -366,7 +402,8 @@ class ClaudeParsingTests(unittest.TestCase):
         from planner import understand
         good = {"city": "Portland", "start_place": "St Stephens Catholic Church", "start_time": "10:00",
                 "end_time": "15:00", "max_walk_km": 3, "day": "Saturday", "stops": ["cafe", "park", "food"],
-                "avoid_hills": False, "prefer_hills": False, "with_ana": False, "dog": False}
+                "avoid_hills": False, "prefer_hills": False, "with_ana": False, "dog": False,
+                "cuisines": [], "food_truck": False, "return_to_start": False}
         r = understand.merge(self.TEXT, good, request.parse(self.TEXT))
         self.assertEqual((r["city"], r["start_place"], r["start_min"], r["end_min"], r["max_walk_km"]),
                          ("Portland", "St Stephens Catholic Church", 600, 900, 3.0))
@@ -417,6 +454,29 @@ class VenueFactsTests(unittest.TestCase):
         page = keenable.best_page([{"url": "https://www.yelp.com/x", "title": "Best tacos"},
                                    {"url": "https://www.lataqueria.com/", "title": "Home"}], "La Taqueria")
         self.assertEqual(page["url"], "https://www.lataqueria.com/")
+
+
+class SlowVenueTests(unittest.TestCase):
+    def test_V3_a_slow_venue_cannot_stall_the_search(self):
+        """V3: a hung page (like Coe Circle's, 40 s) no longer holds up its whole search step."""
+        import time as _t
+        from planner import keenable
+        real = keenable.verify
+
+        def fake(v, category, city="San Francisco"):
+            if v["name"] == "Slow Park":
+                _t.sleep(5)
+            return dict(v, verified=["hours (page)"])
+        keenable.verify = fake
+        try:
+            t = _t.time()
+            out = keenable.verify_all([{"name": "Quick Park"}, {"name": "Slow Park"}], "park", deadline_s=0.5)
+            took = _t.time() - t
+        finally:
+            keenable.verify = real
+        self.assertLess(took, 2)
+        self.assertEqual(out[0]["verified"], ["hours (page)"])
+        self.assertIn("not checked within", out[1]["verify_error"])  # keeps its map facts, with a note
 
 
 class DecisionTests(unittest.TestCase):

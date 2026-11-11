@@ -71,6 +71,7 @@ def combine(profiles, request, start=None, conditions=None):
             "start": start or START,
             "start_min": request.get("start_min", START_TIME),
             "end_min": request.get("end_min"),  # latest finish, if the request gave one
+            "return_to_start": bool(request.get("return_to_start")),  # walk back to the start at the end
             "categories": request.get("categories") or list(DEFAULT_CATEGORIES),
             "city": request.get("city")}
 
@@ -194,10 +195,18 @@ def simulate(stops, ctx):
             violations.append("%s: nothing vegetarian" % v["name"])
         if v.get("verify_error"):
             notes.append("Couldn't check %s online; confirm its hours and dog rules" % v["name"])
+        if cat == "food" and (ctx.get("request") or {}).get("food_truck") and not v.get("food_truck"):
+            notes.append("No food truck fits this route; %s is a restaurant" % v["name"])
         timeline.append({"category": cat, "name": v["name"], "lat": v["lat"], "lon": v["lon"],
                          "arrive": hhmm(arrive), "leave": hhmm(leave), "source": v.get("source", "")})
         t = leave
         here = v
+    back = None
+    if ctx.get("return_to_start"):  # "back at the place of departure": the walk home counts too
+        back = leg(here, start, lim["pace_kmh"], ctx.get("streets"), ctx)
+        t += back["min"]
+        walk_km += back["km"] if back["mode"] == "walk" else back.get("walk_km", 0)
+        climb += back["climb_m"]
     walk_km = round(walk_km, 2)
     if walk_km > lim["max_km"] + 1e-9:
         violations.append("walks %.1f km; the limit is %s km" % (walk_km, ("%g" % lim["max_km"])))
@@ -213,7 +222,8 @@ def simulate(stops, ctx):
 
     it = {"depart": hhmm(start_min), "start": start["name"], "start_lat": start["lat"], "start_lon": start["lon"],
           "stops": timeline, "legs": legs, "walk_km": walk_km, "climb_m": climb,
-          "travel_min": sum(lg["min"] for lg in legs), "idle_min": idle,
+          "travel_min": sum(lg["min"] for lg in legs) + (back["min"] if back else 0), "idle_min": idle,
+          "return_leg": back,
           "end": hhmm(t), "violations": violations, "notes": notes, "weather_at_end": wx}
     score_itinerary(it, stops, ctx, sunset)
     return it
@@ -268,6 +278,8 @@ def score_itinerary(it, stops, ctx, sunset):
                     parts.append(0.75 if "views" in p["activities"]["likes"] else 0.55)
             elif cat in ("cafe", "food"):
                 parts.append(1.0 if set(tags) & set(p["food"]["loves"]) else 0.7)
+                if cat == "food" and (ctx.get("request") or {}).get("food_truck"):
+                    parts.append(1.0 if v.get("food_truck") else 0.5)  # they asked for a food truck
             elif cat == "park":
                 parts.append(0.9 if "views" in p["activities"]["likes"] else 0.8)
             elif cat == "beach":

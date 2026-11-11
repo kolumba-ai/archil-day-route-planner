@@ -34,7 +34,7 @@ def walking_totals(plan):
     """Meters walked, meters climbed and minutes walking on a plan (rides count only their
     short walks to and from the stop)."""
     meters = climb = minutes = 0.0
-    for leg in plan["legs"]:
+    for leg in plan["legs"] + ([plan["return_leg"]] if plan.get("return_leg") else []):
         if leg["mode"] == "walk":
             meters += leg["km"] * 1000
             climb += leg.get("climb_m", 0)
