@@ -107,13 +107,17 @@ def dog_ana_allow(r):
 
 
 def ana_decline(r):
+    """Declining the invitation: Ana isn't coming, nothing of hers is shared, plans go on without her."""
     run, _, _ = run_planner(FULL, "decline")
-    shard = ana_shard(run)
     me = " ".join(e["text"] for e in ev(run, "message") if e["phone"] == "me")
-    real = planner.load_profile("ana")
-    r.check("G2", "Decline", plans_of(run) and "declined" in me
-            and shard["food"]["loves"] != real["food"]["loves"],
-            "plans=%d; shard loves=%s" % (len(plans_of(run)), shard["food"]["loves"]))
+    shard_path = os.path.join(outing_dir(run), "work", "shards", "ana.json")
+    plans = plans_of(run)
+    in_scores = any("Ana" in p["scores"] for p in plans)
+    voters = (ev(run, "vote_open") or [{}])[0].get("voters", [])
+    r.check("G2", "Decline", plans and "Ana declined the invitation." in me and not os.path.exists(shard_path)
+            and not in_scores and voters == ["Me"],
+            "plans=%d; ana shard on disk=%s; Ana scored=%s; voters=%s"
+            % (len(plans), os.path.exists(shard_path), in_scores, voters))
 
 
 def ana_timeout(r):

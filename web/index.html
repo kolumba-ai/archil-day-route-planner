@@ -169,7 +169,7 @@ function buildPhone(id) {
     root.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
     root.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.dataset.view === b.dataset.v));
   });
-  root.querySelector('form').onsubmit = ev => { ev.preventDefault(); send(id, ta.value.trim()); if (id !== 'me') ta.value = ''; };
+  root.querySelector('form').onsubmit = ev => { ev.preventDefault(); const text = ta.value.trim(); ta.value = ''; send(id, text); };
   ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) root.querySelector('form').requestSubmit(); };
   root.querySelectorAll('.pick').forEach(b => b.onclick = () =>
     post('/api/vote', {run, who: cfg.who, rank: +b.dataset.rank}).then(r => r.error && problem(id, r.error)));
@@ -188,9 +188,9 @@ function bubble(phone, text, out, opts = {}) {
   b.appendChild(document.createTextNode(text));
   if (opts.ask) {
     const a = document.createElement('div'); a.className = 'actions';
-    const y = document.createElement('button'); y.className = 'allow'; y.textContent = 'Allow';
+    const y = document.createElement('button'); y.className = 'allow'; y.textContent = 'Accept';
     const n = document.createElement('button'); n.className = 'deny'; n.textContent = 'Decline';
-    const answer = allow => { a.remove(); bubble('ana', allow ? 'Allow' : 'Decline', true); post('/api/share', {run, allow}); };
+    const answer = allow => { a.remove(); bubble('ana', allow ? 'Accept' : 'Decline', true); post('/api/share', {run, allow}); };
     y.onclick = () => answer(true); n.onclick = () => answer(false);
     a.append(y, n); b.appendChild(a);
   }

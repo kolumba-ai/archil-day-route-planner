@@ -142,19 +142,25 @@ def plan(run, text):
     if "ana" in req["with"]:
         run.emit("share_request", frm="Me", to="Ana",
                  asks=["walking limits", "hills", "diet", "museum tolerance", "weather tolerance"])
-        run.say("ana", "Your friend's agent asks for your day-planning limits for Saturday "
-                       "(walking, hills, diet, museum time, weather). Share them?", agent=True, ask=True)
+        run.say("ana", "Your friend is inviting you to several activities on Saturday, "
+                       "taking into account your limits. Accept?", agent=True, ask=True)
         run.share_event.wait(timeout=SHARE_TIMEOUT)
-        if run.share_answer is not True:
-            why = "declined to share" if run.share_answer is False else "didn't answer in time; not sharing"
-            run.say("me", "Ana %s her limits; planning with cautious defaults." % why, agent=True)
-            ana = default_friend("ana", "Ana")
+        if run.share_answer is False:
+            # Declining the invitation means Ana isn't coming: plan without her.
+            run.say("me", "Ana declined the invitation.", agent=True)
+            run.say("ana", "You declined the invitation. Nothing was shared.", agent=True)
+            req["with"] = [w for w in req["with"] if w != "ana"]
+            run.emit("declined", who="Ana")
         else:
-            ana = load_profile("ana")
-            run.say("ana", "Shared a summary of your limits. Nothing else left your disk.", agent=True)
-        summary = {k: ana[k] for k in ("id", "name", "kind", "walking", "food", "activities", "weather")}
-        shards.append(summary)
-        run.emit("shard", owner="Ana", fields=sorted(summary.keys()))
+            if run.share_answer is None:
+                run.say("me", "Ana didn't answer in time; planning with cautious defaults for her.", agent=True)
+                ana = default_friend("ana", "Ana")
+            else:
+                ana = load_profile("ana")
+                run.say("ana", "Accepted, and sent over your limits.", agent=True)
+            summary = {k: ana[k] for k in ("id", "name", "kind", "walking", "food", "activities", "weather")}
+            shards.append(summary)
+            run.emit("shard", owner="Ana", fields=sorted(summary.keys()))
 
     ctx = routes.combine(shards, req)
     run.state.update(req=req, ctx=ctx)
