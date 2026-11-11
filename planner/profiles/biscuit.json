@@ -1,0 +1,8 @@
+{
+  "id": "biscuit",
+  "name": "Biscuit",
+  "kind": "dog",
+  "owner": "me",
+  "walking": { "max_km": 10, "water_every_min": 60 },
+  "rules": { "indoors": false, "needs_dog_friendly_patio": true }
+}

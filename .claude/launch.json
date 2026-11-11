@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "day-planner",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["server.py"],
+      "port": 8765
+    },
+    {
+      "name": "day-planner-sandboxes",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PLANNER_ROUTES=sandboxes", "python3", "server.py"],
+      "port": 8765
+    }
+  ]
+}

@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Group Day Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#f4f2ee; --panel:#fff; --ink:#1d1d1b; --quiet:#6b6a66; --line:#dedbd4;
+          --me:#1f6feb; --them:#ecebe6; --accent:#d9480f; --ok:#2f9e44; --bad:#c92a2a; --warn:#f08c00;
+          --sbx:#7048e8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:10px 20px; display:flex; gap:16px; align-items:baseline; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:18px; margin:0; }
+  header .meta { color:var(--quiet); font-size:12px; }
+  main { display:grid; grid-template-columns:minmax(250px,320px) minmax(0,1fr) minmax(250px,320px); gap:16px; padding:16px; height:calc(100vh - 46px); }
+
+  /* phones */
+  .phone { background:#111; border-radius:28px; padding:10px; display:flex; flex-direction:column; min-height:0; }
+  .phone .title { color:#fff; text-align:center; font-weight:600; padding:2px 0 6px; font-size:13px; }
+  .screen { background:#fff; border-radius:18px; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+  .seg { display:flex; gap:4px; padding:6px; border-bottom:1px solid var(--line); }
+  .seg button { flex:1; border:0; background:#f1f0ec; border-radius:8px; padding:5px; font:inherit; font-size:12px; cursor:pointer; }
+  .seg button.on { background:var(--ink); color:#fff; }
+  .view { flex:1; display:none; flex-direction:column; min-height:0; }
+  .view.on { display:flex; }
+  .msgs { flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:6px; }
+  .bubble { max-width:88%; padding:7px 10px; border-radius:14px; white-space:pre-wrap; font-size:13px; }
+  .bubble.out { align-self:flex-end; background:var(--me); color:#fff; }
+  .bubble.in { align-self:flex-start; background:var(--them); }
+  .bubble .who { font-size:10px; color:var(--quiet); display:block; margin-bottom:2px; }
+  .actions { display:flex; gap:6px; margin-top:6px; }
+  .actions button { flex:1; border:0; border-radius:10px; padding:6px; font-weight:600; cursor:pointer; }
+  .allow { background:var(--ok); color:#fff; } .deny { background:#ddd; }
+  .vote { border-top:1px solid var(--line); padding:8px; display:none; gap:6px; flex-direction:column; font-size:12px; }
+  .vote.on { display:flex; }
+  .vote .row { display:flex; gap:6px; align-items:center; }
+  .vote button { border:1px solid var(--line); background:#fff; border-radius:8px; padding:5px 8px; font:inherit; font-size:12px; cursor:pointer; }
+  .vote button.pick.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .vote select { flex:1; font:inherit; font-size:12px; padding:4px; border-radius:8px; border:1px solid var(--line); }
+  form.compose { display:flex; gap:6px; padding:8px; border-top:1px solid var(--line); align-items:flex-end; }
+  form.compose textarea { flex:1; border:1px solid var(--line); border-radius:12px; padding:7px 10px; font:inherit; font-size:13px; resize:none; }
+  form.compose button { border:0; background:var(--me); color:#fff; border-radius:12px; padding:8px 12px; font-weight:600; cursor:pointer; }
+  .limits { overflow-y:auto; padding:10px 12px; font-size:12px; }
+  .limits h3 { font-size:12px; margin:10px 0 4px; color:var(--quiet); text-transform:uppercase; letter-spacing:.04em; }
+  .limits label { display:grid; grid-template-columns:1fr 120px; align-items:center; gap:6px; margin:4px 0; }
+  .limits input, .limits select { font:inherit; font-size:12px; padding:3px 5px; border:1px solid var(--line); border-radius:6px; width:100%; }
+  .limits .save { margin-top:10px; width:100%; border:0; background:var(--ink); color:#fff; border-radius:10px; padding:7px; font-weight:600; cursor:pointer; }
+  .limits .saved { color:var(--ok); font-size:11px; margin-top:4px; min-height:14px; }
+
+  /* center */
+  .center { display:flex; flex-direction:column; gap:10px; min-height:0; }
+  .tabs { display:flex; gap:4px; }
+  .tabs button { border:1px solid var(--line); background:var(--panel); border-radius:10px 10px 0 0; padding:7px 16px; font:inherit; cursor:pointer; }
+  .tabs button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:0 12px 12px 12px; flex:1; min-height:0; display:none; flex-direction:column; }
+  .panel.on { display:flex; }
+  .pills { display:flex; gap:6px; padding:10px; align-items:center; flex-wrap:wrap; }
+  .pill { border:1px solid var(--line); background:#fff; border-radius:999px; padding:4px 12px; font:inherit; font-size:12px; cursor:pointer; }
+  .pill.on { border-color:var(--accent); background:var(--accent); color:#fff; }
+  .badge { font-size:11px; color:var(--quiet); }
+  #map { flex:1; margin:0 10px 10px; border-radius:8px; min-height:200px; }
+  .scroll { overflow-y:auto; padding:12px; }
+  .plan { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+  .plan.decided { border-color:var(--accent); box-shadow:0 0 0 2px rgba(217,72,15,.15); }
+  .plan h3 { margin:0 0 4px; font-size:14px; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .plan h3 .sc { font-weight:400; color:var(--quiet); font-size:12px; }
+  .plan table { width:100%; border-collapse:collapse; font-size:12px; margin:6px 0; }
+  .plan td, .plan th { text-align:left; padding:3px 6px; border-bottom:1px solid #eee; vertical-align:top; }
+  .plan th { color:var(--quiet); font-weight:500; }
+  .leg { color:var(--quiet); font-size:11px; }
+  .chip { display:inline-block; font-size:11px; padding:1px 8px; border-radius:999px; background:#f1f0ec; margin-right:4px; }
+  .chip.vote { background:var(--accent); color:#fff; }
+  .note { font-size:12px; color:var(--quiet); }
+  .empty { color:var(--quiet); font-size:13px; padding:16px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; padding:12px 12px 0; }
+  .stat b { display:block; font-size:20px; }
+  .stat span { color:var(--quiet); font-size:11px; }
+  .legend { display:flex; gap:14px; font-size:11px; color:var(--quiet); padding:6px 12px; flex-wrap:wrap; }
+  .legend i { display:inline-block; width:12px; height:8px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+  #timeline { overflow-x:auto; }
+  #timeline svg { display:block; }
+  .log { font:11px/1.5 ui-monospace, Menlo, monospace; color:var(--quiet); padding:8px 12px 12px; max-height:160px; overflow-y:auto; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Group Day Planner</h1>
+  <span class="meta" id="backend">Archil branches and sandboxes · OpenInstinct agents simulated as phones</span>
+</header>
+<main>
+  <section class="phone" id="phone-me"></section>
+
+  <section class="center">
+    <div class="tabs">
+      <button data-tab="map" class="on">Map</button>
+      <button data-tab="routes">Routes</button>
+      <button data-tab="tech">Technical</button>
+    </div>
+    <div class="panel on" id="tab-map">
+      <div class="pills" id="map-pills"><span class="empty" style="padding:0">Send a message to start.</span></div>
+      <div id="map"></div>
+    </div>
+    <div class="panel" id="tab-routes"><div class="scroll" id="routes"><div class="empty">Plans appear here.</div></div></div>
+    <div class="panel" id="tab-tech">
+      <div class="stats">
+        <div class="stat"><b id="s-branches">0</b><span>branches forked</span></div>
+        <div class="stat"><b id="s-sbx">0</b><span>Archil sandboxes</span></div>
+        <div class="stat"><b id="s-fork">–</b><span>avg fork time</span></div>
+        <div class="stat"><b id="s-store">–</b><span>written vs. full copies</span></div>
+        <div class="stat"><b id="s-feasible">0</b><span>plans that fit everyone</span></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>checkpoint</span>
+        <span><i style="background:#868e96"></i>search branch</span>
+        <span><i style="background:var(--ok)"></i>route branch, plans found</span>
+        <span><i style="background:var(--bad)"></i>route branch, nothing fits</span>
+        <span><i style="background:var(--sbx)"></i>Archil sandbox (fork, then run)</span>
+      </div>
+      <div class="scroll" style="padding-top:0;flex:1"><div id="timeline"><div class="empty">The disk and sandbox timeline appears here.</div></div></div>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <section class="phone" id="phone-ana"></section>
+</main>
+
+<template id="phone-tpl">
+  <div class="title"></div>
+  <div class="screen">
+    <div class="seg"><button class="on" data-v="chat">Chat</button><button data-v="limits">My limits</button></div>
+    <div class="view on" data-view="chat">
+      <div class="msgs"></div>
+      <div class="vote">
+        <div class="row"><span>I prefer:</span>
+          <button class="pick" data-rank="1">Plan 1</button><button class="pick" data-rank="2">Plan 2</button><button class="pick" data-rank="3">Plan 3</button></div>
+        <div class="row">
+          <select class="chg-plan"><option value="1">Plan 1</option><option value="2">Plan 2</option><option value="3">Plan 3</option></select>
+          <select class="chg">
+            <option value="swap-cafe">different cafe</option><option value="swap-museum">different museum</option>
+            <option value="swap-food">different lunch</option><option value="swap-beach">different beach</option>
+            <option value="less-walking">less walking</option>
+          </select>
+          <button class="ask">Ask</button>
+        </div>
+      </div>
+      <form class="compose"><textarea rows="4"></textarea><button>Send</button></form>
+    </div>
+    <div class="view" data-view="limits"><div class="limits"></div></div>
+  </div>
+</template>
+
+<script>
+const $ = id => document.getElementById(id);
+const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset'},
+                 ana: {who:'Ana', title:"Ana's agent", placeholder:"Type 'plan 2', 'different beach' or 'less walking'"} };
+let run = null, es = null, runInfo = {}, events = [], plans = [], votes = {}, decided = null, selected = 0, map, layer;
+
+// ---------------------------------------------------------------- phones
+function buildPhone(id) {
+  const root = $('phone-' + id), cfg = PHONES[id];
+  root.appendChild($('phone-tpl').content.cloneNode(true));
+  root.querySelector('.title').textContent = cfg.title;
+  const ta = root.querySelector('textarea');
+  if (id === 'me') ta.value = cfg.placeholder; else ta.placeholder = cfg.placeholder;
+  root.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+    root.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
+    root.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.dataset.view === b.dataset.v));
+  });
+  root.querySelector('form').onsubmit = ev => { ev.preventDefault(); send(id, ta.value.trim()); if (id !== 'me') ta.value = ''; };
+  ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) root.querySelector('form').requestSubmit(); };
+  root.querySelectorAll('.pick').forEach(b => b.onclick = () => post('/api/vote', {run, who: cfg.who, rank: +b.dataset.rank}));
+  root.querySelector('.ask').onclick = () => {
+    const rank = +root.querySelector('.chg-plan').value, change = root.querySelector('.chg').value;
+    bubble(id, 'Plan ' + rank + ': ' + root.querySelector('.chg').selectedOptions[0].text, true);
+    post('/api/change', {run, who: cfg.who, rank, change}).then(r => r.run && follow(r.run, false));
+  };
+}
+
+function bubble(phone, text, out, opts = {}) {
+  const box = document.querySelector('#phone-' + phone + ' .msgs');
+  const b = document.createElement('div');
+  b.className = 'bubble ' + (out ? 'out' : 'in');
+  if (!out) { const w = document.createElement('span'); w.className = 'who'; w.textContent = 'agent'; b.appendChild(w); }
+  b.appendChild(document.createTextNode(text));
+  if (opts.ask) {
+    const a = document.createElement('div'); a.className = 'actions';
+    const y = document.createElement('button'); y.className = 'allow'; y.textContent = 'Allow';
+    const n = document.createElement('button'); n.className = 'deny'; n.textContent = 'Decline';
+    const answer = allow => { a.remove(); bubble('ana', allow ? 'Allow' : 'Decline', true); post('/api/share', {run, allow}); };
+    y.onclick = () => answer(true); n.onclick = () => answer(false);
+    a.append(y, n); b.appendChild(a);
+  }
+  box.appendChild(b); box.scrollTop = box.scrollHeight;
+}
+
+async function post(url, body) {
+  const r = await fetch(url, {method:'POST', body: JSON.stringify(body)});
+  return r.json();
+}
+
+async function send(phone, text) {
+  if (!text) return;
+  bubble(phone, text, true);
+  const r = await post('/api/say', {run, who: PHONES[phone].who, text});
+  if (r.action === 'plan') follow(r.run, true);
+  else if (r.action === 'change') follow(r.run, false);
+  else if (r.action === 'hint') bubble(phone, r.text || r.error || 'Not understood.', false);
+}
+
+// ---------------------------------------------------------------- limits forms
+const FIELDS = [
+  ['Walking', [['walking.max_km','Max walking (km)','number'], ['walking.pace_kmh','Pace (km/h)','number'],
+               ['walking.hills','Hills','select:ok,avoid'], ['walking.rest_every_min','Rest every (min)','number']]],
+  ['Food', [['food.diet','Diet','select:omnivore,vegetarian,vegan'], ['food.loves','Loves','list'], ['food.avoids','Avoids','list']]],
+  ['Activities', [['activities.museum_max_min','Museum time (max min)','number'], ['activities.likes','Likes','list'],
+                  ['activities.dislikes','Dislikes','list']]],
+  ['Weather', [['weather.cold_tolerance','Cold tolerance','select:low,medium,high'],
+               ['weather.wind_tolerance','Wind tolerance','select:low,medium,high']]],
+];
+const DOG = [['Biscuit (dog)', [['walking.max_km','Max walking (km)','number'], ['walking.water_every_min','Water every (min)','number']]]];
+const get = (o, path) => path.split('.').reduce((a, k) => a && a[k], o);
+
+function limitsForm(container, pid, groups, prof) {
+  const box = document.createElement('div');
+  groups.forEach(([title, fields]) => {
+    const h = document.createElement('h3'); h.textContent = title; box.appendChild(h);
+    fields.forEach(([path, label, type]) => {
+      const l = document.createElement('label'); l.textContent = label;
+      let input;
+      if (type.startsWith('select:')) {
+        input = document.createElement('select');
+        type.slice(7).split(',').forEach(o => { const op = document.createElement('option'); op.textContent = o; input.appendChild(op); });
+      } else { input = document.createElement('input'); input.type = type === 'number' ? 'number' : 'text'; input.step = 'any'; }
+      const v = get(prof, path); input.value = Array.isArray(v) ? v.join(', ') : (v ?? '');
+      input.dataset.path = path; input.dataset.type = type; l.appendChild(input); box.appendChild(l);
+    });
+  });
+  const save = document.createElement('button'); save.className = 'save'; save.textContent = 'Save ' + (pid === 'biscuit' ? "Biscuit's" : 'my') + ' limits';
+  const saved = document.createElement('div'); saved.className = 'saved';
+  save.onclick = async () => {
+    const out = {};
+    box.querySelectorAll('[data-path]').forEach(i => {
+      const [grp, key] = i.dataset.path.split('.');
+      let v = i.value;
+      if (i.dataset.type === 'number') v = parseFloat(v);
+      if (i.dataset.type === 'list') v = v.split(',').map(s => s.trim()).filter(Boolean);
+      (out[grp] = out[grp] || {})[key] = v;
+    });
+    const r = await post('/api/profile', {id: pid, profile: out});
+    saved.textContent = r.error ? 'Error: ' + r.error : 'Saved. Used in the next plan or change.';
+  };
+  box.append(save, saved); container.appendChild(box);
+}
+
+async function loadProfiles() {
+  const p = await fetch('/api/profiles').then(r => r.json());
+  limitsForm(document.querySelector('#phone-me .limits'), 'me', FIELDS, p.me);
+  limitsForm(document.querySelector('#phone-me .limits'), 'biscuit', DOG, p.biscuit);
+  limitsForm(document.querySelector('#phone-ana .limits'), 'ana', FIELDS, p.ana);
+}
+
+// ---------------------------------------------------------------- runs and events
+function follow(id, fresh) {
+  if (es) es.close();
+  run = id; events = []; plans = []; votes = {}; decided = null; selected = 0;
+  runInfo = {fresh};
+  document.querySelectorAll('.vote').forEach(v => { v.classList.remove('on'); v.querySelectorAll('.pick').forEach(b => b.classList.remove('on')); });
+  renderPlans(); renderTech();
+  es = new EventSource('/api/events?run=' + id);
+  es.onmessage = m => handle(JSON.parse(m.data));
+}
+
+function handle(e) {
+  events.push(e);
+  switch (e.type) {
+    case 'backend': $('backend').textContent = 'Disk: ' + e.name + ' · Search: ' + e.search + ' · OpenInstinct agents simulated';
+                    runInfo.backend = e.name; runInfo.replan = e.replan_of; break;
+    case 'message': bubble(e.phone, e.text, false, {ask: e.ask}); break;
+    case 'plans': plans = e.plans; selected = 0; renderPlans(); break;
+    case 'vote_open': e.voters.forEach(w => {
+      const v = document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' .vote');
+      v.classList.add('on');
+      v.querySelectorAll('.pick').forEach(b => b.style.display = e.ranks.includes(+b.dataset.rank) ? '' : 'none');
+      v.querySelectorAll('.chg-plan option').forEach(o => o.hidden = !e.ranks.includes(+o.value));
+    }); break;
+    case 'vote':
+      votes[e.who] = e.rank;
+      document.querySelectorAll('#phone-' + (e.who === 'Me' ? 'me' : 'ana') + ' .pick').forEach(b => b.classList.toggle('on', +b.dataset.rank === e.rank));
+      renderPlans(); break;
+    case 'decision': decided = e.rank; selected = e.rank - 1; renderPlans(); break;
+  }
+  scheduleTech();
+}
+
+// ---------------------------------------------------------------- map and routes tabs
+map = L.map('map', {zoomControl:true}).setView([37.775, -122.45], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'© OpenStreetMap contributors', maxZoom:18}).addTo(map);
+layer = L.layerGroup().addTo(map);
+
+function voteChips(rank) {
+  return Object.entries(votes).filter(([, r]) => r === rank).map(([w]) => '<span class="chip vote">' + w + "'s pick</span>").join('');
+}
+function scoreText(p) {
+  return Object.entries(p.scores).map(([k, v]) => k + ' ' + (typeof v === 'number' ? Math.round(v * 10) + '/10' : v)).join(' · ');
+}
+
+function renderPlans() {
+  const pills = $('map-pills'); pills.innerHTML = '';
+  if (!plans.length) { pills.innerHTML = '<span class="empty" style="padding:0">' + (run ? 'Planning…' : 'Send a message to start.') + '</span>'; }
+  plans.forEach((p, i) => {
+    const b = document.createElement('button'); b.className = 'pill' + (i === selected ? ' on' : '');
+    b.textContent = 'Plan ' + p.rank + (decided === p.rank ? ' ✓' : '');
+    b.onclick = () => { selected = i; renderPlans(); }; pills.appendChild(b);
+  });
+  if (plans[selected]) { const s = document.createElement('span'); s.className = 'badge'; s.innerHTML = scoreText(plans[selected]) + ' ' + voteChips(plans[selected].rank); pills.appendChild(s); }
+  drawMap();
+  const box = $('routes'); box.innerHTML = '';
+  if (!plans.length) { box.innerHTML = '<div class="empty">' + (run ? 'Planning…' : 'Plans appear here.') + '</div>'; return; }
+  plans.forEach(p => {
+    const d = document.createElement('div'); d.className = 'plan' + (decided === p.rank ? ' decided' : '');
+    let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">group score ' + p.group_score.toFixed(2) +
+            ' · ' + p.walk_km + ' km walking · ' + p.climb_m + ' m climb · done ' + p.end + '</span>' + voteChips(p.rank) + '</h3>';
+    h += '<table><tr><th>Time</th><th>Stop</th><th>Getting there</th></tr>';
+    p.stops.forEach((s, k) => {
+      const l = p.legs[k];
+      h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + esc(s.name) + '<div class="leg">' + s.category + '</div></td><td class="leg">' +
+           (l.mode === 'walk' ? l.min + ' min walk, ' + l.km + ' km' + (l.climb_m ? ', ' + l.climb_m + ' m climb' : '') : l.min + ' min ride (Muni or car)') + '</td></tr>';
+    });
+    h += '</table><div class="note">' + scoreText(p) + '</div>';
+    if (p.notes.length) h += '<div class="note">' + p.notes.map(esc).join(' · ') + '</div>';
+    h += '<div class="note">from branch <code>' + esc(p.branch) + '</code></div>';
+    d.innerHTML = h; d.onclick = () => { selected = p.rank - 1; renderPlans(); }; box.appendChild(d);
+  });
+}
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function drawMap() {
+  layer.clearLayers();
+  const p = plans[selected]; if (!p) return;
+  const pts = [[37.7502, -122.4337]].concat(p.stops.map(s => [s.lat, s.lon]));
+  L.polyline(pts, {color:'#d9480f', weight:4}).addTo(layer);
+  L.circleMarker(pts[0], {radius:5, color:'#555'}).addTo(layer).bindTooltip('Start (Noe Valley) 10:00');
+  p.stops.forEach((s, k) => L.marker([s.lat, s.lon], {icon: L.divIcon({className:'', html:
+    '<div style="background:#d9480f;color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-weight:600;font-size:12px;border:2px solid #fff">' + (k+1) + '</div>'})})
+    .addTo(layer).bindTooltip((k+1) + '. ' + s.name + ' · ' + s.arrive + '–' + s.leave));
+  map.invalidateSize(); map.fitBounds(L.latLngBounds(pts).pad(0.15));
+}
+
+// ---------------------------------------------------------------- technical tab
+let techTimer = null;
+function scheduleTech() { if (!techTimer) techTimer = setTimeout(() => { techTimer = null; renderTech(); }, 150); }
+function kb(b) { return b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : (b/1e3).toFixed(0) + ' KB'; }
+
+function renderTech() {
+  const t0 = events.length ? events[0].t : 0;
+  const branches = events.filter(e => e.type === 'branch');
+  const sbx = branches.filter(e => e.sandbox);
+  const done = {}; events.filter(e => e.type === 'route_done').forEach(e => done[e.branch] = e);
+  const sdone = {}; events.filter(e => e.type === 'search_done').forEach(e => sdone[e.branch] = e);
+  $('s-branches').textContent = branches.length;
+  $('s-sbx').textContent = sbx.length;
+  $('s-fork').textContent = branches.length ? (branches.reduce((a, e) => a + e.ms, 0) / branches.length).toFixed(0) + ' ms' : '–';
+  const st = events.filter(e => e.type === 'storage').pop();
+  $('s-store').textContent = st ? kb(st.delta_bytes) + ' / ' + kb(st.full_copy_bytes) : '–';
+  $('s-feasible').textContent = Object.values(done).reduce((a, e) => a + (e.feasible || 0), 0);
+
+  // rows: checkpoints lane, base sandbox, search branches, route branches
+  const rows = [];
+  const cps = events.filter(e => e.type === 'checkpoint');
+  const base = events.find(e => e.type === 'sandbox_base');
+  if (base) rows.push({label:'base sandbox', bars:[{s:base.start, e:base.end, c:'var(--sbx)', tip:base.name + ' (code + candidates, then stopped)'}]});
+  branches.filter(e => e.name.startsWith('search-')).forEach(e => {
+    const d = sdone[e.name];
+    rows.push({label:e.name, bars:[{s:e.t, e:d ? d.t : null, c:'#868e96', tip:e.name + (d ? ' · ' + d.count + ' found · ' + d.source : ' · running')}]});
+  });
+  branches.filter(e => !e.name.startsWith('search-')).forEach(e => {
+    const d = done[e.name], ok = d && d.feasible > 0, col = d ? (ok ? 'var(--ok)' : 'var(--bad)') : 'var(--warn)';
+    const tip = e.name + (d ? ' · ' + d.museum + ' + ' + d.beach + ' · ' + (ok ? d.feasible + ' plans fit' : (d.dropped[0] || 'nothing fits')) : ' · running');
+    const label = e.sandbox ? e.name.replace(/^gdp-out-[0-9a-f]+-/, 'sandbox ') : e.name;
+    rows.push({label: label + (e.kept ? ' ★' : ''), bars: e.sandbox
+      ? [{s:e.start, e:e.fork_end, c:'var(--sbx)', tip:tip + ' · fork ' + e.ms.toFixed(0) + ' ms'}, {s:e.fork_end, e:e.end, c:col, tip:tip + ' · run'}]
+      : [{s:e.t, e:d ? d.t : null, c:col, tip:tip}]});
+  });
+  const box = $('timeline');
+  if (!rows.length && !cps.length) { box.innerHTML = '<div class="empty">The disk and sandbox timeline appears here.</div>'; renderLog(t0); return; }
+  const now = events[events.length - 1].t;
+  let tmax = now; rows.forEach(r => r.bars.forEach(b => { if (b.e) tmax = Math.max(tmax, b.e); }));
+  // Draw at the panel's real pixel width so labels stay readable (scrolls if narrower than 520 px).
+  const W = Math.max(520, box.clientWidth || 760);
+  const span = Math.max(tmax - t0, 0.5), L0 = 130, R = 16, rowH = 9, gap = 3, top = 28;
+  const X = t => L0 + (t - t0) / span * (W - L0 - R);
+  const H = top + rows.length * (rowH + gap) + 24;
+  let s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" font-size="10" font-family="system-ui">';
+  const step = span > 20 ? 5 : span > 8 ? 2 : span > 3 ? 1 : 0.5;
+  for (let x = 0; x <= span + 1e-9; x += step) {
+    s += '<line x1="' + X(t0 + x) + '" x2="' + X(t0 + x) + '" y1="' + (top - 4) + '" y2="' + (H - 20) + '" stroke="#eee"/>' +
+         '<text x="' + X(t0 + x) + '" y="' + (H - 8) + '" text-anchor="middle" fill="#888">' + (+x.toFixed(1)) + ' s</text>';
+  }
+  s += '<text x="0" y="12" fill="#555" font-weight="600">checkpoints</text>';
+  cps.forEach(c => {
+    const x = X(c.t);
+    s += '<g><title>checkpoint ' + esc(c.name) + (c.sandbox ? ' · kept sandbox ' + esc(c.sandbox) : ' · ' + c.ms + ' ms') + '</title>' +
+         '<path d="M' + x + ' 4l5 5l-5 5l-5 -5z" fill="var(--accent)"/><text x="' + (x + 7) + '" y="22" fill="#555">' + esc(c.name) + '</text></g>';
+  });
+  rows.forEach((r, i) => {
+    const y = top + i * (rowH + gap);
+    s += '<text x="0" y="' + (y + rowH - 1) + '" fill="#555">' + esc(r.label) + '</text>';
+    r.bars.forEach(b => {
+      if (b.s == null) return;
+      const x1 = X(b.s), x2 = X(b.e == null ? now : b.e);
+      s += '<rect x="' + x1 + '" y="' + y + '" width="' + Math.max(2, x2 - x1) + '" height="' + rowH + '" rx="2" fill="' + b.c + '"' +
+           (b.e == null ? ' opacity="0.5"' : '') + '><title>' + esc(b.tip) + '</title></rect>';
+    });
+  });
+  s += '</svg>';
+  box.innerHTML = s;
+  renderLog(t0);
+}
+
+function renderLog(t0) {
+  const keep = ['backend','share_request','shard','combined','checkpoint','search_done','sandbox_phase','sandbox_timing','storage','plans','vote','decision','done'];
+  $('log').innerHTML = events.filter(e => keep.includes(e.type)).map(e => {
+    const d = Object.assign({}, e); ['type','t','seq','plans','limits'].forEach(k => delete d[k]);
+    return '+' + (e.t - t0).toFixed(2) + 's  ' + e.type + '  ' + esc(JSON.stringify(d)).slice(0, 160);
+  }).join('<br>');
+}
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === 'tab-' + b.dataset.tab));
+  if (b.dataset.tab === 'map') setTimeout(drawMap, 0);
+  if (b.dataset.tab === 'tech') renderTech();
+});
+
+buildPhone('me'); buildPhone('ana'); loadProfiles(); renderPlans();
+</script>
+</body>
+</html>
