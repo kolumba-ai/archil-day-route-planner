@@ -552,7 +552,19 @@ class StartPointTests(unittest.TestCase):
             start, _, problem = planner.resolve_start(request.parse(text))
             self.assertIsNone(start, text)
             self.assertEqual(problem[0], "missing", text)
-            self.assertIn("Where should we start", problem[1])
+            self.assertIn("Where", problem[1])
+            self.assertNotIn("San Francisco", problem[1], "the question must not assume a city")
+            self.assertNotIn("Ferry Building", problem[1])
+        # With a city, the question names it; without one, it asks for the city too.
+        self.assertIn("in Portland Oregon", planner.resolve_start(request.parse(
+            "Plan Saturday in Portland Oregon, coffee and a park"))[2][1])
+        self.assertIn("the city", planner.resolve_start(request.parse("Plan Saturday, coffee and a park"))[2][1])
+
+    def test_Q1c_address_reply_keeps_its_city(self):
+        for reply in ("4055 SE Salmon St, Portland OR 97214", "4055 SE Salmon St, Portland Or 97214",
+                      "4055 SE Salmon St, Portland, OR"):
+            r = request.parse("Plan Saturday with Ana, coffee and a park. Starting at %s." % reply)
+            self.assertEqual((r["start_place"], r["city"]), ("4055 SE Salmon St", "Portland OR"), reply)
 
     def test_Q1b_demo_start_needs_no_lookup(self):
         start, _, problem = planner.resolve_start(request.parse(

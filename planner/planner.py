@@ -130,8 +130,13 @@ def resolve_start(req):
     city = req["city"] or "San Francisco"
     place = (req["start_place"] or "").strip()
     if not place:
-        return None, None, ("missing", "Where should we start from? Tell me a place or street address in %s "
-                                       "(for example \"starting at the Ferry Building\"). I'll plan as soon as I know." % city)
+        if req["city"]:
+            question = ("Where in %s should we start from? Tell me a place or street address. "
+                        "I'll plan as soon as I know." % req["city"])
+        else:  # no city named: ask for both, never assume one
+            question = ("Where should we start from? Tell me the place or street address and the city "
+                        "(for example \"St Stephens Catholic Church in Portland, Oregon\"). I'll plan as soon as I know.")
+        return None, None, ("missing", question)
     if not req["city"] and place.lower().rstrip(".") in DEMO_STARTS:
         return routes.START, None, None  # the built-in San Francisco demo
     try:

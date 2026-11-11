@@ -84,6 +84,10 @@ def parse(text):
     m = re.search(r"\bin\s+((?:[A-Z][\w.'-]*\s?)+(?:,\s*[A-Z][\w.'-]*)?)", text)
     if m:
         city = re.sub(r"\s+(Start|Starting|Walk|With|And)$", "", m.group(1).strip(" ,."))
+    if not city:  # a street address with its city: "4055 SE Salmon St, Portland OR 97214"
+        m = re.search(r",\s*((?:[A-Z][a-z][\w.'-]*\s?)+?),?\s+([A-Z][A-Za-z])\b\.?(?:\s*\d{5}(?:-\d{4})?)?\s*(?:[.!?]|$)", text)
+        if m:
+            city = "%s %s" % (m.group(1).strip(), m.group(2).upper())
     if city and re.fullmatch(r"(?i)(san francisco|sf)(,? ca(lifornia)?)?", city):
         city = None  # the built-in demo city
 
