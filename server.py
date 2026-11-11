@@ -15,6 +15,7 @@ os.environ.setdefault("PLANNER_PROFILES_DIR",
 from planner import planner  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
+API_VERSION = 2  # bump when the page needs new endpoints; the page checks it (web/index.html)
 PORT = int(os.environ.get("PORT", "8765"))
 
 CHANGE_WORDS = [
@@ -74,6 +75,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif url.path == "/api/version":
+            self._json(200, {"api": API_VERSION})
         elif url.path == "/api/profiles":
             self._json(200, {pid: planner.load_profile(pid) for pid in ("me", "ana", "biscuit")})
         elif url.path == "/api/events":

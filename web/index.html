@@ -171,11 +171,12 @@ function buildPhone(id) {
   });
   root.querySelector('form').onsubmit = ev => { ev.preventDefault(); send(id, ta.value.trim()); if (id !== 'me') ta.value = ''; };
   ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) root.querySelector('form').requestSubmit(); };
-  root.querySelectorAll('.pick').forEach(b => b.onclick = () => post('/api/vote', {run, who: cfg.who, rank: +b.dataset.rank}));
+  root.querySelectorAll('.pick').forEach(b => b.onclick = () =>
+    post('/api/vote', {run, who: cfg.who, rank: +b.dataset.rank}).then(r => r.error && problem(id, r.error)));
   root.querySelector('.ask').onclick = () => {
     const rank = +root.querySelector('.chg-plan').value, change = root.querySelector('.chg').value;
     bubble(id, 'Plan ' + rank + ': ' + root.querySelector('.chg').selectedOptions[0].text, true);
-    post('/api/change', {run, who: cfg.who, rank, change}).then(r => r.run && follow(r.run, false));
+    post('/api/change', {run, who: cfg.who, rank, change}).then(r => r.error ? problem(id, r.error) : follow(r.run, false));
   };
 }
 
@@ -197,17 +198,37 @@ function bubble(phone, text, out, opts = {}) {
 }
 
 async function post(url, body) {
-  const r = await fetch(url, {method:'POST', body: JSON.stringify(body)});
-  return r.json();
+  try {
+    const r = await fetch(url, {method:'POST', body: JSON.stringify(body)});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok && !data.error) data.error = 'HTTP ' + r.status;
+    if (r.status === 404 && data.error === 'not found') data.error = 'the server is out of date; restart it (python3 server.py)';
+    return data;
+  } catch (e) {
+    return {error: 'cannot reach the server (' + e.message + ')'};
+  }
 }
+
+function problem(phone, text) { bubble(phone, '⚠ ' + text, false); }
 
 async function send(phone, text) {
   if (!text) return;
   bubble(phone, text, true);
   const r = await post('/api/say', {run, who: PHONES[phone].who, text});
-  if (r.action === 'plan') follow(r.run, true);
+  if (r.error) problem(phone, r.error);
+  else if (r.action === 'plan') follow(r.run, true);
   else if (r.action === 'change') follow(r.run, false);
-  else if (r.action === 'hint') bubble(phone, r.text || r.error || 'Not understood.', false);
+  else if (r.action === 'hint') bubble(phone, r.text || 'Not understood.', false);
+}
+
+async function checkServer() {
+  const r = await fetch('/api/version').then(x => x.ok ? x.json() : null).catch(() => null);
+  if (!r || r.api < 2) {
+    const b = document.createElement('div');
+    b.style.cssText = 'background:#c92a2a;color:#fff;padding:8px 20px;font-weight:600';
+    b.textContent = 'The server is older than this page. Stop it (Ctrl+C) and start it again: python3 server.py';
+    document.body.prepend(b);
+  }
 }
 
 // ---------------------------------------------------------------- limits forms
@@ -250,7 +271,8 @@ function limitsForm(container, pid, groups, prof) {
       (out[grp] = out[grp] || {})[key] = v;
     });
     const r = await post('/api/profile', {id: pid, profile: out});
-    saved.textContent = r.error ? 'Error: ' + r.error : 'Saved. Used in the next plan or change.';
+    saved.style.color = r.error ? 'var(--bad)' : 'var(--ok)';
+    saved.textContent = r.error ? 'Not saved: ' + r.error : 'Saved. Used in the next plan or change.';
   };
   box.append(save, saved); container.appendChild(box);
 }
@@ -436,7 +458,7 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.tab === 'tech') renderTech();
 });
 
-buildPhone('me'); buildPhone('ana'); loadProfiles(); renderPlans();
+buildPhone('me'); buildPhone('ana'); checkServer(); loadProfiles(); renderPlans();
 </script>
 </body>
 </html>
