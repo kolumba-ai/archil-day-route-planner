@@ -100,7 +100,7 @@ def build_matrix(points):
     return m
 
 
-def path(a, b, mode):
+def path(a, b, mode, timeout=30):
     """Street path from a to b as [[lat, lon], ...]; mode 'walk' (foot) or 'ride' (car)."""
     profile = "foot" if mode == "walk" else "car"
     ck = "path:%s:%s:%s" % (profile, key(a), key(b))
@@ -110,7 +110,7 @@ def path(a, b, mode):
             return cache[ck]
     url = (BASE % profile) + "/route/v1/driving/%.5f,%.5f;%.5f,%.5f?overview=full&geometries=geojson" % (
         a["lon"], a["lat"], b["lon"], b["lat"])
-    coords = _get(url)["routes"][0]["geometry"]["coordinates"]
+    coords = _get(url, timeout=timeout)["routes"][0]["geometry"]["coordinates"]
     pts = [[round(lat, 5), round(lon, 5)] for lon, lat in coords]
     with _lock:
         _cache[ck] = pts
@@ -119,12 +119,28 @@ def path(a, b, mode):
 
 
 def add_paths(plans, start):
-    """Attach a street path to every leg of every plan (in place). Failures leave straight lines."""
+    """Attach a street path to every leg of every plan (in place), fetching legs in parallel.
+    If the router refuses or times out, stop asking: the map draws straight lines instead,
+    so an outage costs seconds, not minutes."""
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = []
     for p in plans:
         here = start
         for leg, stop in zip(p["legs"], p["stops"]):
-            try:
-                leg["path"] = path(here, stop, leg["mode"])
-            except Exception as e:  # keep the plan; the map draws a straight line instead
-                leg["path_error"] = str(e)[:100]
+            jobs.append((leg, here, stop))
             here = stop
+    down = threading.Event()
+
+    def fetch(job):
+        leg, a, b = job
+        if down.is_set():
+            leg["path_error"] = "router unavailable"
+            return
+        try:
+            leg["path"] = path(a, b, leg["mode"], timeout=12)
+        except Exception as e:  # keep the plan; the map draws a straight line instead
+            leg["path_error"] = str(e)[:100]
+            down.set()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(fetch, jobs))

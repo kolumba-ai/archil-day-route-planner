@@ -5,7 +5,7 @@ Archil exec microVM (Python 3.10 + Archil SDK), which:
 1. deletes the sandboxes kept from the previous outing,
 2. creates a base sandbox with the planner code and this outing's context + candidates,
    then stops it (the stopped base is the `candidates` checkpoint),
-3. forks one sandbox per (museum, beach) pair, all at once, and runs planner.route_worker,
+3. forks one sandbox per route branch (a combination of anchor venues), all at once, and runs planner.route_worker,
 4. judges the results, keeps the 3 winning sandboxes (stopped) as plan-1..3 and the base,
    and deletes the rest.
 """
@@ -23,7 +23,7 @@ import json, sys, time, tarfile
 from concurrent.futures import ThreadPoolExecutor
 T = time.time
 opts = json.load(open("opts.json"))
-oid, pairs = opts["outing_id"], opts["pairs"]
+oid, specs = opts["outing_id"], opts["specs"]
 tarfile.open("app.tgz").extractall("app")
 sys.path.insert(0, "app")
 from planner import routes  # same code the sandboxes run, used here to judge
@@ -54,8 +54,8 @@ base = base.stop()
 base_s = T() - t
 
 # 3. one sandbox per route branch, all at once
-def branch(k_pair):
-    k, (i, j) = k_pair
+def branch(k_spec):
+    k, spec = k_spec
     name = "gdp-out-%s-r%03d" % (oid, k + 1)
     t0 = T()
     t_start = t0 - t_all
@@ -63,7 +63,7 @@ def branch(k_pair):
         sb = base.fork(name=name)
         fork_s = T() - t0
         t1 = T()
-        r = sb.exec("cd /root/app && python3 -m planner.route_worker /root/outing.json %d %d" % (i, j), timeout_seconds=300)
+        r = sb.exec("cd /root/app && python3 -m planner.route_worker /root/outing.json %s" % spec, timeout_seconds=300)
         run_s = T() - t1
         line = next((l for l in (r.stdout or "").splitlines() if l.startswith("RESULT ")), None)
         res = json.loads(line[7:]) if line else {"error": (r.stderr or r.stdout or "")[-300:]}
@@ -73,8 +73,8 @@ def branch(k_pair):
                 "t_start": t_start}
 
 t = T()
-with ThreadPoolExecutor(min(100, len(pairs))) as pool:
-    results = list(pool.map(branch, enumerate(pairs)))
+with ThreadPoolExecutor(min(100, len(specs))) as pool:
+    results = list(pool.map(branch, enumerate(specs)))
 fan_s = T() - t
 
 # 4. judge, keep winners (stopped) as plan checkpoints, delete the rest
@@ -112,10 +112,11 @@ def _code_tarball():
     return buf.getvalue()
 
 
-def run_route_phase(outing_id, ctx, candidates, pairs):
-    """pairs: list of (museum index, beach index). Returns the controller's ROUTES dict."""
+def run_route_phase(outing_id, ctx, candidates, specs):
+    """specs: one dict per branch, {category: index into candidates}. Returns the ROUTES dict."""
+    from .route_worker import format_spec
     outing = json.dumps({"ctx": ctx, "candidates": candidates}).encode()
-    opts = json.dumps({"outing_id": outing_id, "pairs": pairs}).encode()
+    opts = json.dumps({"outing_id": outing_id, "specs": [format_spec(s) for s in specs]}).encode()
     out = archil_remote.run_python(CONTROLLER, files={
         "app.tgz": _code_tarball(), "outing.json": outing, "opts.json": opts})
     line = next((l for l in reversed(out.get("stdout", "").splitlines()) if l.startswith("ROUTES ")), None)

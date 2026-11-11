@@ -164,12 +164,16 @@ def main():
         if name == "live-search" and "--keenable" in sys.argv:
             env["PLANNER_SEARCH"] = "keenable"
         t0 = time.time()
-        p = subprocess.run([sys.executable, "-m", "tests.scenarios", name], cwd=path, env=env,
-                           capture_output=True, text=True, timeout=300)
+        try:
+            p = subprocess.run([sys.executable, "-m", "tests.scenarios", name], cwd=path, env=env,
+                               capture_output=True, text=True, timeout=480)
+            out, err = p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:  # a stuck live service fails that scenario, not the run
+            out, err = "", "timed out after %d s" % e.timeout
         dur = time.time() - t0
-        line = next((l for l in p.stdout.splitlines() if l.startswith("RESULTS ")), None)
+        line = next((l for l in out.splitlines() if l.startswith("RESULTS ")), None)
         res = json.loads(line[8:]) if line else [
-            {"id": "ERR", "name": "scenario " + name, "ok": False, "detail": p.stderr[-200:]}]
+            {"id": "ERR", "name": "scenario " + name, "ok": False, "detail": err[-200:]}]
         for r in res:
             r["where"] = "branch scn-" + name
         return {"name": name, "path": path, "rows": res, "secs": dur, "fork_ms": fork_ms,
@@ -190,7 +194,8 @@ def main():
                 crosstalk.append(r["name"] + ": marker overwritten")
         data = os.path.join(r["path"], "data")
         mine = sorted(d for d in os.listdir(data) if d.startswith("outing-")) if os.path.isdir(data) else []
-        expected = 2 if r["name"] == "sandbox-routes" else 1  # E8 plans twice: local, then sandboxes
+        # E8 plans twice (local, then sandboxes); M3 twice (avoiding hills, then wanting them)
+        expected = 2 if r["name"] in ("sandbox-routes", "hills-both-ways") else 1
         if len(mine) > expected:
             crosstalk.append("%s: %d outing folders" % (r["name"], len(mine)))
         for o in mine:

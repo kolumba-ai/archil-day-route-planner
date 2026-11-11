@@ -41,7 +41,7 @@ SCHEMA = {
 def _stop_icon(stop):
     if stop["category"] == "museum" and "outdoor" in stop["name"].lower():
         return "🌳"
-    return {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️"}.get(stop["category"], "📍")
+    return {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️", "park": "🌳"}.get(stop["category"], "📍")
 
 
 def _note_icon(note):
@@ -52,8 +52,9 @@ def _note_icon(note):
 def template(plans, reader):
     """Offline version: the same facts and icons, written by code. Returns a list of texts."""
     who = "you and your friend" if reader == "Ana" else "your group"
-    out = ["🗓️ I have %d plan%s for Saturday for %s%s. Here they are:"
-           % (len(plans), "" if len(plans) == 1 else "s", who,
+    day = plans[0].get("day", "Saturday") if plans else "Saturday"
+    out = ["🗓️ I have %d plan%s for %s for %s%s. Here they are:"
+           % (len(plans), "" if len(plans) == 1 else "s", day, who,
               " 🐕" if any("Biscuit" in p["scores"] for p in plans) else "")]
     for p in plans:
         # On the phone: just when you leave and the stops. Details live in the Routes tab.

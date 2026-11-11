@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from planner import planner, routes, search
+from planner import planner, request, routes, search
 
 FERRY = {"name": "Ferry Building", "lat": 37.7955, "lon": -122.3937}
 CRISSY = {"name": "Crissy Field", "lat": 37.8045, "lon": -122.4486}
@@ -89,6 +89,10 @@ class RouteTests(unittest.TestCase):
             self.assertGreaterEqual(routes.to_min(b["arrive"]), routes.to_min(a["leave"]))
 
 
+def all_branches(cands, c):
+    return [{k: cands[k][i] for k, i in spec.items()} for spec in routes.branch_specs(cands, c["categories"])]
+
+
 def it_conditions():
     return routes.load_conditions()
 
@@ -114,10 +118,9 @@ class ScoreTests(unittest.TestCase):
         c = ctx("me", "ana", "biscuit", dog=True)
         cands = {cat: search.load_seed(cat) for cat in ("cafe", "museum", "food", "beach")}
         pool, every = [], []
-        for m in cands["museum"]:
-            for b in cands["beach"]:
-                pool += [("b", it) for it in routes.route_branch(m, b, cands, c)[0]]
-                every += routes.route_branch(m, b, cands, c, keep=10 ** 6)[0]
+        for fixed in all_branches(cands, c):
+            pool += [("b", it) for it in routes.route_branch(fixed, cands, c)[0]]
+            every += routes.route_branch(fixed, cands, c, keep=10 ** 6)[0]
         fastest = min(it["travel_min"] for it in every)
         plans = [it for _, it in routes.pick_diverse(pool, 3)]
         self.assertLessEqual(plans[0]["travel_min"], fastest + 10, "plan 1 %d min vs fastest %d" % (plans[0]["travel_min"], fastest))
@@ -129,15 +132,125 @@ class ScoreTests(unittest.TestCase):
         c = ctx("me", "ana", "biscuit", dog=True)
         cands = {cat: search.load_seed(cat) for cat in ("cafe", "museum", "food", "beach")}
         plans = []
-        for m in cands["museum"]:
-            for b in cands["beach"]:
-                best, _, _ = routes.route_branch(m, b, cands, c, keep=50)
-                plans += best
+        for fixed in all_branches(cands, c):
+            plans += routes.route_branch(fixed, cands, c, keep=50)[0]
         scores = sorted(p["group_score"] for p in plans)
         self.assertGreaterEqual(scores[-1] - scores[0], 0.1, "spread %.2f" % (scores[-1] - scores[0]))
         top3 = sorted(plans, key=lambda p: -p["group_score"])[:3]
         people = [v for p in top3 for v in p["scores"].values() if isinstance(v, float)]
         self.assertFalse(all(v >= 0.9 for v in people), "every person scores 9-10/10 in the top 3 plans")
+
+
+PORTLAND = ("Plan Saturday with Ana in Portland Oregon, starting at St Stephen's Catholic Church. Start at 10am "
+            "and walk for no more than 2km, visiting at least one park, one coffee shop, and avoiding hills.")
+
+
+class RequestTests(unittest.TestCase):
+    """R: reading the request: city, start, time, walking limit, stops, hills."""
+
+    def test_R1_portland_request(self):
+        r = request.parse(PORTLAND)
+        self.assertEqual(r["city"], "Portland Oregon")
+        self.assertEqual(r["start_place"], "St Stephen's Catholic Church")
+        self.assertEqual(r["start_min"], 10 * 60)
+        self.assertEqual(r["max_walk_km"], 2.0)
+        self.assertEqual(sorted(r["categories"]), ["cafe", "park"])
+        self.assertTrue(r["avoid_hills"])
+        self.assertEqual(r["with"], ["ana"])
+
+    def test_R2_start_place_is_not_a_stop(self):
+        r = request.parse("Plan Sunday in Chicago starting at Millennium Park at 9:30am: coffee, a museum and lunch, "
+                          "walk at most 2 miles")
+        self.assertEqual((r["city"], r["start_place"], r["day"]), ("Chicago", "Millennium Park", "Sunday"))
+        self.assertEqual(r["start_min"], 9 * 60 + 30)
+        self.assertAlmostEqual(r["max_walk_km"], 3.22, places=2)
+        self.assertEqual(r["categories"], ["cafe", "museum", "food"])  # "Millennium Park" is the start, not a park stop
+
+    def test_R3_other_cities(self):
+        cases = {
+            "Plan Saturday in New York City starting from Washington Square Park, coffee and a park, under 3 km":
+                ("New York City", "Washington Square Park", ["cafe", "park"]),
+            "Plan Saturday in Seattle starting at Pike Place Market at 11am, coffee and a museum":
+                ("Seattle", "Pike Place Market", ["cafe", "museum"]),
+            "Plan Saturday in Austin Texas, starting at the Texas State Capitol: lunch and a park":
+                ("Austin Texas", "the Texas State Capitol", ["food", "park"]),
+        }
+        for text, (city, start, cats) in cases.items():
+            r = request.parse(text)
+            self.assertEqual((r["city"], r["start_place"], r["categories"]), (city, start, cats), text)
+
+    def test_R4_san_francisco_demo_default(self):
+        r = request.parse("Plan Saturday with Ana and Biscuit: coffee, a museum, burritos, beach at sunset")
+        self.assertIsNone(r["city"])
+        self.assertEqual(r["categories"], ["cafe", "museum", "food", "beach"])
+        self.assertTrue(r["dog"])
+
+    def test_R5_hill_preferences(self):
+        for text in ("avoiding hills", "no hills please", "keep it flat"):
+            r = request.parse("Plan Saturday in Portland, coffee and a park, " + text)
+            self.assertTrue(r["avoid_hills"] and not r["prefer_hills"], text)
+        for text in ("I want hills", "something hilly", "a good climb", "with some hills"):
+            r = request.parse("Plan Saturday in Portland, coffee and a park, " + text)
+            self.assertTrue(r["prefer_hills"] and not r["avoid_hills"], text)
+        r = request.parse("Plan Saturday in Portland, coffee and a park")
+        self.assertFalse(r["avoid_hills"] or r["prefer_hills"])
+
+
+# A small offline city: one cafe north of the start, a flat park east, a park on a 90 m hill west.
+TOWN_START = {"name": "Test Church", "lat": 45.5000, "lon": -122.6000}
+TOWN = {
+    "cafe": [{"name": "Corner Coffee", "lat": 45.5027, "lon": -122.6000, "open": "07:00", "close": "18:00",
+              "dogs": "patio", "vegetarian_ok": True, "tags": ["cafe"]}],
+    "park": [{"name": "Flat Park", "lat": 45.5000, "lon": -122.5923, "open": "05:00", "close": "22:00",
+              "dogs": "leash", "tags": ["park"]},
+             {"name": "Hill Park", "lat": 45.5000, "lon": -122.6077, "open": "05:00", "close": "22:00",
+              "dogs": "leash", "tags": ["park"]}],
+}
+TOWN_ELEV = {(45.5000, -122.6000): 50, (45.5027, -122.6000): 52, (45.5000, -122.5923): 51, (45.5000, -122.6077): 140}
+TOWN_WEATHER = {"sunset": "16:40", "hourly": {str(h): {"all": {"temp_c": 14, "wind_kmh": 10, "fog": False}} for h in range(7, 21)}}
+
+
+def town_plans(text):
+    req = request.parse(text)
+    c = routes.combine(profiles("me"), req, start=TOWN_START, conditions=TOWN_WEATHER)
+    c["elev"] = {routes.key({"lat": la, "lon": lo}): e for (la, lo), e in TOWN_ELEV.items()}
+    pool = []
+    for fixed in all_branches(TOWN, c):
+        pool += [("b", it) for it in routes.route_branch(fixed, TOWN, c)[0]]
+    return [it for _, it in routes.pick_diverse(pool, 3)]
+
+
+class AnyCityTests(unittest.TestCase):
+    """W: planning works wherever the request says, with its limits; hills both ways."""
+
+    BASE = "Plan Saturday in Testville starting at Test Church at 9am, coffee and a park, walk at most 2 km"
+
+    def test_W1_plans_where_and_when_asked(self):
+        plans = town_plans(self.BASE)
+        self.assertTrue(plans)
+        sf_names = {v["name"] for cat in ("cafe", "museum", "food", "beach") for v in search.load_seed(cat)}
+        for p in plans:
+            self.assertEqual(p["start"], "Test Church")
+            self.assertEqual(p["depart"], "09:00")
+            self.assertEqual(sorted(s["category"] for s in p["stops"]), ["cafe", "park"])
+            self.assertLessEqual(p["walk_km"], 2.0)
+            self.assertFalse({s["name"] for s in p["stops"]} & sf_names, "San Francisco venue in another city")
+
+    def test_W2_avoid_hills_picks_the_flat_route(self):
+        plans = town_plans(self.BASE + ", avoiding hills")
+        self.assertTrue(plans)
+        self.assertEqual(next(s["name"] for s in plans[0]["stops"] if s["category"] == "park"), "Flat Park")
+        for p in plans:  # the hill route climbs ~90 m, over the 60 m limit for "avoid hills"
+            self.assertLessEqual(p["climb_m"], routes.HILLY_AVOID_REQUEST_M, p["stops"])
+
+    def test_W3_wanting_hills_picks_the_hilly_route(self):
+        plans = town_plans(self.BASE + ", I want some hills")
+        self.assertTrue(plans)
+        self.assertEqual(next(s["name"] for s in plans[0]["stops"] if s["category"] == "park"), "Hill Park")
+        self.assertGreaterEqual(plans[0]["climb_m"], 80)
+
+    def test_W4_walking_limit_is_a_hard_limit(self):
+        self.assertEqual(town_plans(self.BASE.replace("2 km", "0.5 km")), [])
 
 
 if __name__ == "__main__":

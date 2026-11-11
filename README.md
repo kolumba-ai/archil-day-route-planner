@@ -3,9 +3,19 @@
 A hackathon demo of agents that plan a San Francisco day out for a group (two friends and a dog), built on **Archil** branches and sandboxes, with **Keenable** web search and **OpenInstinct**-style personal agents (simulated as two phones in the browser).
 
 - Each person keeps their limits (walking, hills, diet, museum time, weather) in their own profile and shares only a summary, with consent.
-- The planner combines everyone's limits, searches for cafes, museums, food and beaches, then forks one branch per museum-and-beach pair to simulate routes: walking time with hills, opening hours, dog rules and the weather at sunset.
-- With `PLANNER_ROUTES=sandboxes`, every route branch runs in its own **Archil sandbox** (35 microVMs per request, forked from one base sandbox in about a second).
+- The planner combines everyone's limits with the request (city, start, time, walking limit, stops), searches for the stops asked for (cafes, parks, museums, food, beaches), then forks one branch per combination of two key stops (for example each museum-and-beach pair, or each park-and-coffee-shop pair) to simulate routes: walking time on real streets, hills, opening hours, dog rules and the weather.
+- With `PLANNER_ROUTES=sandboxes`, every route branch runs in its own **Archil sandbox** (35 to 50 microVMs per request, forked from one base sandbox in about a second).
 - A judge picks up to 3 different plans that leave nobody unhappy and keep travel time low; each person picks one by texting its number (1, 2 or 3). Plans can't be changed.
+
+### Not just San Francisco
+
+The demo is set in San Francisco, but the planner works in any city. Name the city, a starting place, a start time, a walking limit and the stops you want, for example:
+
+> Plan Saturday with Ana in Portland Oregon, starting at St Stephen's Catholic Church. Start at 10am and walk for no more than 2km, visiting at least one park, one coffee shop, and avoiding hills.
+
+Outside the built-in San Francisco demo data, the planner finds the starting place and nearby venues on OpenStreetMap (with their opening hours), takes hills from real elevation data and the weather and sunset from the forecast for that day (Open-Meteo), and routes on real streets (OSRM). All of these are free and need no key.
+
+Hills are one of the constraints. They matter a lot in San Francisco and may not matter at all in a flat city. The request decides: "avoiding hills" rejects routes that climb more than 60 m, "I want some hills" rewards climbing, and saying nothing about hills just counts climbing time.
 
 ### How the demo uses disk branching and sandboxes
 

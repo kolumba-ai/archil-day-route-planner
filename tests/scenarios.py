@@ -255,7 +255,72 @@ def sandbox_routes(r):
             % (len(sbx), timing.get("fanout_s", 0), secs, same, errors[:1]))
 
 
+def _city_check(r, tid, name, text, box, cats, limit_km, depart, max_climb=None):
+    """Live: plan in a real city (OpenStreetMap, Open-Meteo, OSRM) and check the plans honor it."""
+    os.environ["PLANNER_ROUTING"] = "osrm"
+    run, secs, _ = run_planner(text, "allow" if " ana" in text.lower() else None, timeout=300)
+    plans = plans_of(run)
+    place = (ev(run, "place") or [{}])[0]
+    sf = {v["name"] for c in ("cafe", "museum", "food", "beach") for v in search.load_seed(c)}
+    inside = lambda la, lo: box[0] <= la <= box[1] and box[2] <= lo <= box[3]
+    problems = []
+    if not place or not inside(place.get("lat", 0), place.get("lon", 0)):
+        problems.append("start not in the city: %s" % place)
+    if not plans:
+        problems.append("no plans; messages: %s" % [e["text"][:80] for e in ev(run, "message") if e["phone"] == "me"][-2:])
+    for p in plans:
+        got = sorted(s["category"] for s in p["stops"])
+        if got != sorted(cats):
+            problems.append("plan %d stops %s, asked %s" % (p["rank"], got, cats))
+        if any(not inside(s["lat"], s["lon"]) or s["name"] in sf for s in p["stops"]):
+            problems.append("plan %d has a stop outside the city" % p["rank"])
+        if p["walk_km"] > limit_km + 1e-6:
+            problems.append("plan %d walks %.2f km > %s" % (p["rank"], p["walk_km"], limit_km))
+        if p["depart"] != depart:
+            problems.append("plan %d leaves at %s, asked %s" % (p["rank"], p["depart"], depart))
+        if max_climb is not None and p["climb_m"] > max_climb:
+            problems.append("plan %d climbs %d m" % (p["rank"], p["climb_m"]))
+    r.check(tid, name, not problems, "; ".join(problems[:3]) or "%s from %s: %d plans, walks %s km, climbs %s m; %.0f s"
+            % (place.get("city"), place.get("start"), len(plans), [p["walk_km"] for p in plans],
+               [p["climb_m"] for p in plans], secs))
+    return plans
+
+
+def city_portland(r):
+    """M1: the exact request that used to come back with San Francisco routes."""
+    _city_check(r, "M1", "Portland: start, 2 km, park + coffee, no hills",
+                "Plan Saturday with Ana in Portland Oregon, starting at St Stephen's Catholic Church. Start at 10am and "
+                "walk for no more than 2km, visiting at least one park, one coffee shop, and avoiding hills.",
+                (45.43, 45.60, -122.80, -122.50), ["park", "cafe"], 2.0, "10:00", max_climb=routes.HILLY_AVOID_REQUEST_M)
+
+
+def city_chicago(r):
+    """M2: another city, start time, miles and three stop types."""
+    _city_check(r, "M2", "Chicago: 9:30, 2 miles, coffee + museum + lunch",
+                "Plan Sunday in Chicago starting at Millennium Park at 9:30am: coffee, a museum and lunch, walk at most 2 miles",
+                (41.80, 41.95, -87.72, -87.55), ["cafe", "museum", "food"], 3.22, "09:30")
+
+
+def hills_both_ways(r):
+    """M3: the same day in hilly San Francisco, once avoiding hills and once wanting them."""
+    base = "Plan Saturday in San Francisco starting at Mission Dolores Park, coffee and a park, walk at most 3 km, "
+    box = (37.70, 37.83, -122.52, -122.35)
+    flat = _city_check(r, "M3a", "Avoid hills (San Francisco)", base + "avoiding hills",
+                       box, ["cafe", "park"], 3.0, "10:00", max_climb=routes.HILLY_AVOID_REQUEST_M)
+    hilly = _city_check(r, "M3b", "Want hills (San Francisco)", base + "I want some hills",
+                        box, ["cafe", "park"], 3.0, "10:00")
+    if flat and hilly:
+        r.check("M3", "Hill preference changes the route", hilly[0]["climb_m"] > flat[0]["climb_m"] + 20,
+                "plan 1 climbs %d m wanting hills vs %d m avoiding them; parks: %s vs %s" % (
+                    hilly[0]["climb_m"], flat[0]["climb_m"],
+                    next(s["name"] for s in hilly[0]["stops"] if s["category"] == "park"),
+                    next(s["name"] for s in flat[0]["stops"] if s["category"] == "park")))
+
+
 SCENARIOS = {
+    "city-portland": (city_portland, "test-base"),
+    "city-chicago": (city_chicago, "test-base"),
+    "hills-both-ways": (hills_both_ways, "test-base"),
     "street-routing": (street_routing, "after-search"),
     "sandbox-routes": (sandbox_routes, "after-search"),
     "dog-ana-allow": (dog_ana_allow, "after-search"),

@@ -137,12 +137,14 @@ def saturday_hours(text):
     return None
 
 
-def coordinates(results):
+def coordinates(results, near=None):
     for r in results:
         m = re.search(r"coordinate=(-?\d+\.\d+),(-?\d+\.\d+)", r.get("url", ""))
         if m:
             lat, lon = float(m.group(1)), float(m.group(2))
-            if 37.70 < lat < 37.83 and -122.53 < lon < -122.35:
+            # Accept a map pin only near where we expected the venue (default: San Francisco).
+            ref = near or {"lat": 37.765, "lon": -122.44}
+            if abs(lat - ref["lat"]) < 0.08 and abs(lon - ref["lon"]) < 0.1:
                 return lat, lon
     return None
 
@@ -166,27 +168,27 @@ def dog_policy(text, category):
     return None
 
 
-def verify(venue, category):
+def verify(venue, category, city="San Francisco"):
     """Check one venue (cached for a day): one combined search for hours, location and dogs,
     plus a dogs-only search only if the first found nothing about dogs."""
-    ck = "%s|%s" % (category, venue["name"])
+    ck = "%s|%s|%s" % (city, category, venue["name"]) if city != "San Francisco" else "%s|%s" % (category, venue["name"])
     hit = _cache_get(ck)
     if hit:
         return dict(hit, cached=True)
-    v = _verify(venue, category)
+    v = _verify(venue, category, city)
     if not v.get("verify_error"):
         _cache_put(ck, v)
     return v
 
 
-def _verify(venue, category):
+def _verify(venue, category, city="San Francisco"):
     v = dict(venue)
     name = re.sub(r"\s*\(.*?\)", "", v["name"])  # "Ritual Coffee Roasters (Valencia)" -> name only
     area = re.search(r"\((.*?)\)", v["name"])
     where = (area.group(1) + " ") if area and "alternative" not in area.group(1) else ""
     verified, sources = [], []
     try:
-        res = search("%s %sSan Francisco hours dogs allowed" % (name, where), n=8)
+        res = search("%s %s%s hours dogs allowed" % (name, where, city), n=8)
     except Exception as e:
         v["verify_error"] = repr(e)
         return v
@@ -201,7 +203,7 @@ def _verify(venue, category):
                 verified.append("hours")
                 sources.append(r["url"])
                 break
-    c = coordinates(res)
+    c = coordinates(res, near=venue)
     if c:
         v["lat"], v["lon"] = c
         verified.append("location")
@@ -221,7 +223,7 @@ def _verify(venue, category):
 
     if not check_dogs(res):  # nothing about dogs in the combined search: one dogs-only search
         try:
-            check_dogs(search("%s San Francisco dogs allowed" % name, n=4))
+            check_dogs(search("%s %s dogs allowed" % (name, city), n=4))
         except Exception:
             pass
     v["verified"] = verified
@@ -229,7 +231,7 @@ def _verify(venue, category):
     return v
 
 
-def verify_all(venues, category, workers=None):
+def verify_all(venues, category, workers=None, city="San Francisco"):
     workers = workers or (12 if _keyed() else 3)  # PACER keeps the request rate legal
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(lambda v: verify(v, category), venues))
+        return list(pool.map(lambda v: verify(v, category, city), venues))

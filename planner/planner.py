@@ -8,7 +8,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from . import present, routes, search, streets
+from . import places, present, routes, search, streets
+from . import request as request_mod
 from .disk import OutingDisk
 
 HERE = os.path.dirname(__file__)
@@ -69,17 +70,8 @@ def default_friend(pid, name):
 
 
 def parse_request(text):
-    low = text.lower()
-    cats = [c for c, words in CATEGORY_WORDS if any(w in low for w in words)]
-    if len(cats) < 4:
-        cats = ["cafe", "museum", "food", "beach"]  # v1 always plans the full day shape
-    return {
-        "text": text,
-        "day": "Saturday",
-        "categories": cats,
-        "with": ["ana"] if "ana" in low else [],
-        "dog": any(w in low for w in ("dog", "biscuit")),
-    }
+    """City, start, time, walking limit, stop types, who's coming: see planner/request.py."""
+    return request_mod.parse(text)
 
 
 class Run:
@@ -133,7 +125,33 @@ def plan(run, text):
     run.emit("backend", name=disk.backend.name + (" · routes: one Archil sandbox each"
                                                   if os.environ.get("PLANNER_ROUTES") == "sandboxes" else ""),
              search=search.provider_label())
-    run.say("me", "On it. Checking Saturday's weather" + (" and asking Ana's agent for her limits." if req["with"] else "."), agent=True)
+    run.say("me", "On it. Checking %s's weather%s" % (req["day"], " and asking Ana's agent for her limits." if req["with"] else "."),
+            agent=True)
+    run.emit("request", **{k: v for k, v in req.items() if k != "text"})
+
+    # Where: the San Francisco demo, or any other city (start place found on OpenStreetMap,
+    # weather and sunset from Open-Meteo).
+    start, conditions = routes.START, None
+    if req["city"] or req["start_place"]:
+        city = req["city"] or "San Francisco"
+        start = places.find_start(req["start_place"], city)
+        if not start:
+            run.say("me", "I couldn't find %s on the map. Try a nearby landmark or street address."
+                    % (req["start_place"] or city), agent=True)
+            run.emit("done", ok=False)
+            return
+        try:
+            conditions = places.conditions(start, req["day"])
+        except Exception as e:
+            run.say("me", "No weather forecast available (%s); assuming mild weather." % str(e)[:60], agent=True)
+            conditions = {"sunset": "17:00", "hourly": {"12": {"all": {"temp_c": 16, "wind_kmh": 10, "fog": False}}}}
+        run.emit("place", city=city, start=start["name"], lat=start["lat"], lon=start["lon"],
+                 sunset=conditions["sunset"], date=conditions.get("date"))
+        run.say("me", "Starting from %s in %s at %s; walking up to %s km%s. Stops: %s." % (
+            start["name"], city, routes.hhmm(req["start_min"]),
+            ("%g" % req["max_walk_km"]) if req["max_walk_km"] else "your usual",
+            ", avoiding hills" if req["avoid_hills"] else "",
+            ", ".join(req["categories"])), agent=True)
 
     # --- Phase 1: gather shards (Ana's comes from her agent, with consent)
     shards = [load_profile("me")]
@@ -162,7 +180,9 @@ def plan(run, text):
             shards.append(summary)
             run.emit("shard", owner="Ana", fields=sorted(summary.keys()))
 
-    ctx = routes.combine(shards, req)
+    ctx = routes.combine(shards, req, start=start, conditions=conditions)
+    if req["start_place"] and not req["city"]:
+        ctx["city"] = "San Francisco"  # a custom start in the demo city: use real places too
     run.state.update(req=req, ctx=ctx)
     run.emit("combined", limits=ctx["limits"])
     work = disk.work
@@ -175,7 +195,8 @@ def plan(run, text):
     # Street distances don't depend on the search when the candidates are the seed venues
     # (seed or Keenable mode, which only checks them): fetch the table in parallel.
     prefetch = None
-    if streets.enabled() and not search.live_search_available() and os.environ.get("PLANNER_SEARCH") in ("seed", "keenable", None, ""):
+    if (streets.enabled() and not ctx.get("city") and not search.live_search_available()
+            and os.environ.get("PLANNER_SEARCH") in ("seed", "keenable", None, "")):
         seed_points = [routes.START] + [v for cat in req["categories"] for v in search.load_seed(cat)]
         prefetch = ThreadPoolExecutor(max_workers=1).submit(streets.build_matrix, seed_points)
         run.state["streets_started"] = time.time()
@@ -184,11 +205,14 @@ def plan(run, text):
     def search_branch(cat):
         name = "search-" + cat
         path = disk.branch("combined", name)
-        if RECORDED:
+        if RECORDED and not ctx.get("city"):  # recorded results are San Francisco demo data
             with open(RECORDED) as f:
                 venues, source = json.load(f)[cat], "recorded search results"
         else:
-            venues, source = search.search_category(cat, ctx)
+            try:
+                venues, source = search.search_category(cat, ctx)
+            except Exception as e:  # a map service down shouldn't crash the plan
+                venues, source = [], "search failed: %s" % str(e)[:80]
         n = disk.write_json(path, "candidates/%s.json" % cat, venues)
         disk.record_write(name, n)
         run.emit("search_done", branch=name, category=cat, count=len(venues), source=source,
@@ -197,6 +221,25 @@ def plan(run, text):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         candidates = dict(pool.map(search_branch, req["categories"]))
+    missing = [c for c in req["categories"] if not candidates.get(c)]
+    if missing:
+        failed = sorted({e["source"] for e in run.events if e["type"] == "search_done"
+                         and e["source"].startswith("search failed")})
+        if failed:
+            run.say("me", "The map service didn't answer (%s). Please try again in a minute." % failed[0][15:],
+                    agent=True)
+        else:
+            run.say("me", "I couldn't find any %s within reach of %s. Try a longer walk or other stops."
+                    % (" or ".join(missing), ctx["start"]["name"]), agent=True)
+        run.emit("done", ok=False)
+        return
+    if ctx.get("city"):  # hills from real terrain: elevation of the start and every candidate
+        pts = [ctx["start"]] + [v for vs in candidates.values() for v in vs]
+        try:
+            ctx["elev"] = {routes.key(p): e for p, e in zip(pts, places.elevations(pts))}
+            run.emit("elevation", places=len(ctx["elev"]), source="Open-Meteo")
+        except Exception as e:
+            run.emit("elevation", ok=False, error=str(e)[:100])
     disk.write_json(work, "candidates.json", candidates)
     disk.checkpoint(work, "candidates")
     run.state["candidates"] = candidates
@@ -213,7 +256,7 @@ def route_and_finish(run, req, disk, ctx, candidates, prefetch=None):
     ctx.pop("streets", None)
     if streets.enabled():
         t = run.state.get("streets_started") if prefetch else time.time()
-        points = [routes.START] + [v for vs in candidates.values() for v in vs]
+        points = [ctx["start"]] + [v for vs in candidates.values() for v in vs]
         try:
             matrix = None
             if prefetch:  # fetched while searching; use it if it covers every final place
@@ -231,25 +274,24 @@ def route_and_finish(run, req, disk, ctx, candidates, prefetch=None):
             run.emit("streets", ok=False, error=str(e)[:120])
             run.say("me", "Street routing is unavailable (%s); estimating distances in straight lines." % str(e)[:80],
                     agent=True)
-    pairs = [(m, b) for m in candidates["museum"] for b in candidates["beach"]]
+    specs = routes.branch_specs(candidates, ctx["categories"])  # one branch per anchor combination
     chosen = None
     if os.environ.get("PLANNER_ROUTES") == "sandboxes":
         try:
-            chosen = routes_on_sandboxes(run, ctx, candidates)
+            chosen = routes_on_sandboxes(run, ctx, candidates, specs)
         except Exception as e:
             run.say("me", "Archil sandboxes unavailable (%s); simulating routes here instead." % str(e)[:120], agent=True)
     if chosen is None:
-        chosen = routes_locally(run, disk, ctx, candidates, pairs)
+        chosen = routes_locally(run, disk, ctx, candidates, specs)
     finish(run, req, disk, work, chosen)
 
 
-def routes_on_sandboxes(run, ctx, candidates):
+def routes_on_sandboxes(run, ctx, candidates, specs):
     """Phase 3 + 4 with one Archil sandbox per route branch. Returns the judge's picks."""
     from . import sandbox_routes
-    idx = [(i, j) for i in range(len(candidates["museum"])) for j in range(len(candidates["beach"]))]
-    run.say("me", "Forking %d Archil sandboxes, one per route..." % len(idx), agent=True)
-    run.emit("sandbox_phase", count=len(idx))
-    out = sandbox_routes.run_route_phase(run.id, ctx, candidates, idx)
+    run.say("me", "Forking %d Archil sandboxes, one per route..." % len(specs), agent=True)
+    run.emit("sandbox_phase", count=len(specs))
+    out = sandbox_routes.run_route_phase(run.id, ctx, candidates, specs)
     # Timings come back as offsets from the controller's start; place them on our clock.
     t_base = time.time() - out["timing"]["total_s"]
     tm = out["timing"]
@@ -264,13 +306,13 @@ def routes_on_sandboxes(run, ctx, candidates):
                  end=round(start + r["fork_s"] + r.get("run_s", 0), 3),
                  kept=r["branch"] in out["kept"])
         if "error" in r:
-            run.emit("route_done", branch=r["branch"], museum="?", beach="?", best=0, feasible=0,
+            run.emit("route_done", branch=r["branch"], label="?", best=0, feasible=0,
                      dropped=["sandbox error: " + r["error"][:80]])
             continue
         best = r["best"]
         written += len(json.dumps({"best": best[0] if best else None, "dropped": r["dropped"]},
                                   separators=(",", ":")))
-        run.emit("route_done", branch=r["branch"], museum=r["museum"], beach=r["beach"],
+        run.emit("route_done", branch=r["branch"], label=r["label"],
                  best=best[0]["group_score"] if best else 0, feasible=r["feasible"], dropped=r["dropped"],
                  run_s=round(r["run_s"], 2))
     base = len(json.dumps({"ctx": ctx, "candidates": candidates}))
@@ -282,15 +324,17 @@ def routes_on_sandboxes(run, ctx, candidates):
     return [(c["branch"], c["plan"]) for c in out["chosen"]]
 
 
-def routes_locally(run, disk, ctx, candidates, pairs):
+def routes_locally(run, disk, ctx, candidates, specs):
     """Phase 3 + 4 on local copy-on-write branches. Returns the judge's picks."""
 
-    def route_work(i_pair):
-        i, (museum, beach) = i_pair
+    def route_work(i_spec):
+        i, spec = i_spec
+        fixed = {c: candidates[c][j] for c, j in spec.items()}
+        label = routes.branch_label(fixed)
         name = "route-%03d" % (i + 1)
         path = disk.branch("candidates", name)
-        run.emit("route_start", branch=name, museum=museum["name"], beach=beach["name"])
-        best, drops, ok = routes.route_branch(museum, beach, candidates, ctx)
+        run.emit("route_start", branch=name, label=label)
+        best, drops, ok = routes.route_branch(fixed, candidates, ctx)
         # On disk: the best plan in full, the runners-up as one-line summaries.
         result = {
             "best": best[0] if best else None,
@@ -300,12 +344,12 @@ def routes_locally(run, disk, ctx, candidates, pairs):
         }
         n = disk.write_json(path, "result.json", result, compact=True)
         disk.record_write(name, n)
-        run.emit("route_done", branch=name, museum=museum["name"], beach=beach["name"],
+        run.emit("route_done", branch=name, label=label,
                  best=best[0]["group_score"] if best else 0, feasible=ok, dropped=drops)
         return name, best
 
     with ThreadPoolExecutor(max_workers=16) as pool:
-        results = list(pool.map(route_work, enumerate(pairs)))
+        results = list(pool.map(route_work, enumerate(specs)))
     run.emit("storage", **disk.storage())
 
     # --- Phase 4: judge picks 3 different plans
@@ -317,9 +361,10 @@ def routes_locally(run, disk, ctx, candidates, pairs):
 
 
 def finish(run, req, disk, work, chosen):
-    plans = [dict(it, branch=name, rank=i) for i, (name, it) in enumerate(chosen, 1)]
+    plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco")
+             for i, (name, it) in enumerate(chosen, 1)]
     if plans and run.state.get("ctx", {}).get("streets"):
-        streets.add_paths(plans, routes.START)  # street-following lines for the map
+        streets.add_paths(plans, run.state["ctx"]["start"])  # street-following lines for the map
     disk.write_json(work, "plans.json", plans)
     run.state.update(plans=plans, votes={})
     run.emit("plans", plans=plans)

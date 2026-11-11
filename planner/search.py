@@ -70,6 +70,8 @@ def search_category(category, context):
     Default: Claude if a key is set, otherwise seed data.
     """
     mode = os.environ.get("PLANNER_SEARCH", "")
+    if context.get("city"):
+        return search_city(category, context, mode)
     if mode == "keenable":
         from . import keenable
         try:
@@ -84,6 +86,30 @@ def search_category(category, context):
             print("live search failed for %s: %r" % (category, e))
     time.sleep(random.uniform(0.6, 1.6))  # make the offline run look like real fan-out
     return load_seed(category), "seed data"
+
+
+def search_radius_m(context):
+    """How far from the start to look: about 60% of the walking limit, 600 m to 2.5 km."""
+    limit_km = context["limits"]["max_km"]
+    return int(max(600, min(2500, limit_km * 1000 * 0.6)))
+
+
+def search_city(category, context, mode):
+    """Any city other than the San Francisco demo: real places near the start from
+    OpenStreetMap, then (with PLANNER_SEARCH=keenable) checked on the web with Keenable."""
+    from . import places
+    from .request import DAYS
+    day_index = DAYS.index(context["request"].get("day", "Saturday").lower())
+    venues = places.find_venues(category, context["start"], search_radius_m(context), day_index=day_index)
+    source = "OpenStreetMap"
+    if venues and mode == "keenable":
+        from . import keenable
+        try:
+            venues = keenable.verify_all(venues, category, city=context["city"])
+            source = "OpenStreetMap + Keenable"
+        except Exception as e:
+            print("Keenable check failed for %s: %r" % (category, e))
+    return venues, source
 
 
 def _claude_search(category, context):

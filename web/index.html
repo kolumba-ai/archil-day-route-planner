@@ -324,7 +324,7 @@ function renderPlans() {
     let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
             p.walk_km + ' km walking · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
     // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
-    const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️'}[s.category] || '📍');
+    const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️', park:'🌳'}[s.category] || '📍');
     let from = (p.start || 'Start (Noe Valley)'), at = p.depart || '10:00';
     h += '<table><tr><th style="width:96px">Time</th><th>Stop or way there</th></tr>';
     h += '<tr><td>' + at + '</td><td>🕙 Leave ' + esc(from) + '</td></tr>';
@@ -333,7 +333,7 @@ function renderPlans() {
       const leaveAt = k === 0 ? at : p.stops[k - 1].leave;
       h += '<tr class="leg"><td class="leg">' + leaveAt + '</td><td class="leg">' + (walk ? '🚶 Walk' : '🚌 Ride') + ' from ' + esc(from.replace(/^Start \((.*)\)$/, '$1')) +
            ' to ' + esc(s.name) + ' · ' + l.min + ' min · ' + l.km + ' km' + (walk && l.climb_m ? ' · ' + l.climb_m + ' m climb' : '') +
-           (walk ? '' : ' (Muni or car)') + '</td></tr>';
+           (walk ? '' : ' (transit or car)') + '</td></tr>';
       h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + ICON(s) + ' <b>' + esc(s.name) + '</b></td></tr>';
       from = s.name;
     });
@@ -348,18 +348,19 @@ function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt
 function drawMap() {
   layer.clearLayers();
   const p = plans[selected]; if (!p) return;
-  const pts = [[37.7502, -122.4337]].concat(p.stops.map(s => [s.lat, s.lon]));
+  const start = [p.start_lat || 37.7502, p.start_lon || -122.4337];
+  const pts = [start].concat(p.stops.map(s => [s.lat, s.lon]));
   // Each leg follows the streets when the router gave a path; walks solid, rides dashed.
   p.legs.forEach((l, k) => {
     const line = l.path && l.path.length > 1 ? l.path : [pts[k], pts[k + 1]];
     L.polyline(line, l.mode === 'walk'
       ? {color:'#d9480f', weight:4}
       : {color:'#5f3dc4', weight:4, dashArray:'8 8'}).addTo(layer)
-      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' from ' + (k === 0 ? 'Noe Valley' : p.stops[k - 1].name) + ' to ' +
+      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' from ' + (k === 0 ? (p.start || 'the start') : p.stops[k - 1].name) + ' to ' +
                    p.stops[k].name + ' · ' + l.min + ' min · ' + l.km + ' km' + (l.path ? '' : ' (straight line: no street route)'));
     line.forEach(pt => pts.push(pt));
   });
-  L.circleMarker(pts[0], {radius:5, color:'#555'}).addTo(layer).bindTooltip('Start (Noe Valley) 10:00');
+  L.circleMarker(start, {radius:6, color:'#555', fillOpacity:.9}).addTo(layer).bindTooltip('Start: ' + (p.start || 'Noe Valley') + ' · ' + (p.depart || '10:00'));
   p.stops.forEach((s, k) => L.marker([s.lat, s.lon], {icon: L.divIcon({className:'', html:
     '<div style="background:#d9480f;color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-weight:600;font-size:12px;border:2px solid #fff">' + (k+1) + '</div>'})})
     .addTo(layer).bindTooltip((k+1) + '. ' + s.name + ' · ' + s.arrive + '–' + s.leave));
@@ -398,7 +399,7 @@ function renderTech() {
   });
   branches.filter(e => !e.name.startsWith('search-')).forEach(e => {
     const d = done[e.name], ok = d && d.feasible > 0, col = d ? (ok ? 'var(--ok)' : 'var(--bad)') : 'var(--warn)';
-    const tip = e.name + (d ? ' · ' + d.museum + ' + ' + d.beach + ' · ' + (ok ? d.feasible + ' plans fit' : (d.dropped[0] || 'nothing fits')) : ' · running');
+    const tip = e.name + (d ? ' · ' + (d.label || '') + ' · ' + (ok ? d.feasible + ' plans fit' : (d.dropped[0] || 'nothing fits')) : ' · running');
     const label = e.sandbox ? e.name.replace(/^gdp-out-[0-9a-f]+-/, 'sandbox ') : e.name;
     rows.push({label: label + (e.kept ? ' ★' : ''), bars: e.sandbox
       ? [{s:e.start, e:e.fork_end, c:'var(--sbx)', tip:tip + ' · fork ' + e.ms.toFixed(0) + ' ms'}, {s:e.fork_end, e:e.end, c:col, tip:tip + ' · run'}]
