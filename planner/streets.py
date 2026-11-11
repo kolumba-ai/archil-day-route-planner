@@ -28,7 +28,8 @@ def enabled():
 
 
 def key(p):
-    return "%.5f,%.5f" % (p["lat"], p["lon"])
+    # Rounded to ~100 m so a pin nudged by a few meters still finds its distances.
+    return "%.3f,%.3f" % (p["lat"], p["lon"])
 
 
 def _get(url, timeout=30):
@@ -83,8 +84,12 @@ def build_matrix(points):
         if ck in cache:
             return cache[ck]
     coords = ";".join("%.5f,%.5f" % (uniq[k]["lon"], uniq[k]["lat"]) for k in keys)
-    foot = _get((BASE % "foot") + "/table/v1/driving/" + coords + "?annotations=distance")
-    car = _get((BASE % "car") + "/table/v1/driving/" + coords + "?annotations=duration")
+    # Walking and driving tables in parallel: each takes several seconds on the public servers.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_foot = pool.submit(_get, (BASE % "foot") + "/table/v1/driving/" + coords + "?annotations=distance")
+        f_car = pool.submit(_get, (BASE % "car") + "/table/v1/driving/" + coords + "?annotations=duration")
+        foot, car = f_foot.result(), f_car.result()
     m = {"walk_km": {}, "car_min": {}, "source": "OSRM walking and driving tables (OpenStreetMap)"}
     for i, a in enumerate(keys):
         m["walk_km"][a] = {b: round((foot["distances"][i][j] or 0) / 1000.0, 3) for j, b in enumerate(keys)}

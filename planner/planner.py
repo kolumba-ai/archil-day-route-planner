@@ -172,6 +172,14 @@ def plan(run, text):
     disk.write_json(work, "conditions.json", ctx["conditions"])
     disk.checkpoint(work, "combined")
 
+    # Street distances don't depend on the search when the candidates are the seed venues
+    # (seed or Keenable mode, which only checks them): fetch the table in parallel.
+    prefetch = None
+    if streets.enabled() and not search.live_search_available() and os.environ.get("PLANNER_SEARCH") in ("seed", "keenable", None, ""):
+        seed_points = [routes.START] + [v for cat in req["categories"] for v in search.load_seed(cat)]
+        prefetch = ThreadPoolExecutor(max_workers=1).submit(streets.build_matrix, seed_points)
+        run.state["streets_started"] = time.time()
+
     # --- Phase 2: one search branch per stop type
     def search_branch(cat):
         name = "search-" + cat
@@ -194,23 +202,31 @@ def plan(run, text):
     run.state["candidates"] = candidates
     run.say("me", "Found %d places. Simulating routes in parallel branches..." %
             sum(len(v) for v in candidates.values()), agent=True)
-    route_and_finish(run, req, disk, ctx, candidates)
+    route_and_finish(run, req, disk, ctx, candidates, prefetch)
 
 
-def route_and_finish(run, req, disk, ctx, candidates):
+def route_and_finish(run, req, disk, ctx, candidates, prefetch=None):
     """Phases 3 and 4: simulate routes (sandboxes or local branches), judge, report."""
     work = disk.work
     # Real walking distances and driving times between every pair of places, fetched once
     # so the route branches (and sandboxes) never call the router themselves.
     ctx.pop("streets", None)
     if streets.enabled():
-        t = time.time()
+        t = run.state.get("streets_started") if prefetch else time.time()
         points = [routes.START] + [v for vs in candidates.values() for v in vs]
         try:
-            ctx["streets"] = streets.build_matrix(points)
+            matrix = None
+            if prefetch:  # fetched while searching; use it if it covers every final place
+                try:
+                    matrix = prefetch.result(timeout=120)
+                    if not all(streets.key(p) in matrix["walk_km"] for p in points):
+                        matrix = None
+                except Exception:
+                    matrix = None
+            ctx["streets"] = matrix or streets.build_matrix(points)
             disk.write_json(work, "streets.json", ctx["streets"], compact=True)
             run.emit("streets", ok=True, places=len(ctx["streets"]["walk_km"]), ms=round((time.time() - t) * 1000),
-                     source=ctx["streets"]["source"])
+                     source=ctx["streets"]["source"], in_parallel_with_search=bool(matrix))
         except Exception as e:
             run.emit("streets", ok=False, error=str(e)[:120])
             run.say("me", "Street routing is unavailable (%s); estimating distances in straight lines." % str(e)[:80],

@@ -6,7 +6,9 @@ venue record would need an LLM; here we parse the facts we need from snippets:
 - map coordinates (map links carry "coordinate=lat,lon")
 - dog policy keywords ("dog-friendly", "no dogs", ...)
 
-Uses the keyless public endpoint (1,000 requests/hour per IP) unless KEENABLE_API_KEY is set.
+With KEENABLE_API_KEY set, calls go to the keyed endpoint (10 requests/second for the
+organization, no hourly cap); without it, to the keyless public endpoint, which shares
+1,000 requests/hour per IP. Checked venues are cached on disk for a day (VERIFY_TTL_S).
 """
 import json
 import os
@@ -17,8 +19,11 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-API = "https://api.keenable.ai/v1/search/public"
+KEYED_API = "https://api.keenable.ai/v1/search"
+PUBLIC_API = "https://api.keenable.ai/v1/search/public"
 TITLE = "group-day-planner"
+CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "keenable-cache.json")
+VERIFY_TTL_S = 24 * 3600
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_RE = r"(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?"
@@ -26,25 +31,81 @@ TIME_RE = r"(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?"
 RANGE_RE = TIME_RE + r"\s*(?:–|-|to)\s*" + TIME_RE
 
 
-IN_FLIGHT = threading.Semaphore(int(os.environ.get("KEENABLE_CONCURRENCY", "3")))
+def _keyed():
+    return bool(os.environ.get("KEENABLE_API_KEY", "").strip())
+
+
+class _Pacer:
+    """At most `rate` request starts per second and `slots` requests in flight."""
+
+    def __init__(self, rate, slots):
+        self.gap, self.lock, self.next = 1.0 / rate, threading.Lock(), 0.0
+        self.slots = threading.Semaphore(slots)
+
+    def __enter__(self):
+        self.slots.acquire()
+        with self.lock:
+            now = time.time()
+            wait, self.next = max(0.0, self.next - now), max(now, self.next) + self.gap
+        if wait:
+            time.sleep(wait)
+
+    def __exit__(self, *exc):
+        self.slots.release()
+
+
+# Keyed: Keenable allows 10/s per organization, so stay just under. Keyless: be gentle.
+PACER = _Pacer(9, 12) if _keyed() else _Pacer(3, 3)
 
 
 def search(query, n=5, tries=4):
+    key = os.environ.get("KEENABLE_API_KEY", "").strip()
     headers = {"Content-Type": "application/json", "X-Keenable-Title": TITLE}
-    key = os.environ.get("KEENABLE_API_KEY")
     if key:
         headers["X-API-Key"] = key
+    url = KEYED_API if key else PUBLIC_API
     body = json.dumps({"query": query, "max_results": n}).encode()
     for attempt in range(tries):
-        req = urllib.request.Request(API, data=body, headers=headers, method="POST")
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with IN_FLIGHT, urllib.request.urlopen(req, timeout=25) as r:
+            with PACER, urllib.request.urlopen(req, timeout=25) as r:
                 return json.load(r).get("results", [])
         except urllib.error.HTTPError as e:
             if e.code != 429 or attempt == tries - 1:
                 raise
             wait = e.headers.get("Retry-After")
             time.sleep(min(float(wait) if wait and wait.isdigit() else 2 ** attempt, 10))
+
+
+_cache_lock = threading.Lock()
+
+
+def _cache_load():
+    try:
+        with open(CACHE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _cache_get(key):
+    with _cache_lock:
+        hit = _cache_load().get(key)
+    if hit and time.time() - hit["at"] < VERIFY_TTL_S:
+        return hit["venue"]
+    return None
+
+
+def _cache_put(key, venue):
+    with _cache_lock:
+        data = _cache_load()
+        data[key] = {"at": time.time(), "venue": venue}
+        try:
+            os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+            with open(CACHE_FILE, "w") as f:
+                json.dump(data, f)
+        except OSError:
+            pass
 
 
 def _to_hhmm(h, m, ap):
@@ -106,14 +167,26 @@ def dog_policy(text, category):
 
 
 def verify(venue, category):
-    """Check one venue with two searches; returns an updated copy and what was verified."""
+    """Check one venue (cached for a day): one combined search for hours, location and dogs,
+    plus a dogs-only search only if the first found nothing about dogs."""
+    ck = "%s|%s" % (category, venue["name"])
+    hit = _cache_get(ck)
+    if hit:
+        return dict(hit, cached=True)
+    v = _verify(venue, category)
+    if not v.get("verify_error"):
+        _cache_put(ck, v)
+    return v
+
+
+def _verify(venue, category):
     v = dict(venue)
     name = re.sub(r"\s*\(.*?\)", "", v["name"])  # "Ritual Coffee Roasters (Valencia)" -> name only
     area = re.search(r"\((.*?)\)", v["name"])
     where = (area.group(1) + " ") if area and "alternative" not in area.group(1) else ""
     verified, sources = [], []
     try:
-        res = search("%s %sSan Francisco hours" % (name, where))
+        res = search("%s %sSan Francisco hours dogs allowed" % (name, where), n=8)
     except Exception as e:
         v["verify_error"] = repr(e)
         return v
@@ -132,9 +205,8 @@ def verify(venue, category):
     if c:
         v["lat"], v["lon"] = c
         verified.append("location")
-    try:
-        dres = search("%s San Francisco dogs allowed" % name, n=4)
-        for r in dres:
+    def check_dogs(results):
+        for r in results:
             pol = dog_policy(r.get("title", "") + " " + r.get("snippet", ""), category)
             if pol:
                 # Keyword matching can misread "Are dogs allowed? No", so a search result
@@ -144,14 +216,20 @@ def verify(venue, category):
                     v["dogs_note"] = "stricter policy found on the web"
                 verified.append("dogs")
                 sources.append(r["url"])
-                break
-    except Exception:
-        pass
+                return True
+        return False
+
+    if not check_dogs(res):  # nothing about dogs in the combined search: one dogs-only search
+        try:
+            check_dogs(search("%s San Francisco dogs allowed" % name, n=4))
+        except Exception:
+            pass
     v["verified"] = verified
     v["source"] = sources[0] if sources else (res[0]["url"] if res else v.get("source", ""))
     return v
 
 
-def verify_all(venues, category, workers=6):
+def verify_all(venues, category, workers=None):
+    workers = workers or (12 if _keyed() else 3)  # PACER keeps the request rate legal
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(lambda v: verify(v, category), venues))

@@ -81,7 +81,7 @@ def leg(a, b, pace_kmh, streets=None):
     With a street matrix (streets.build_matrix) distances follow real streets and paths,
     and rides use real driving times; without one, straight-line distance x 1.3.
     """
-    ka, kb = "%.5f,%.5f" % (a["lat"], a["lon"]), "%.5f,%.5f" % (b["lat"], b["lon"])
+    ka, kb = "%.3f,%.3f" % (a["lat"], a["lon"]), "%.3f,%.3f" % (b["lat"], b["lon"])  # same keys as streets.key
     on_streets = bool(streets) and kb in streets["walk_km"].get(ka, {})
     d = streets["walk_km"][ka][kb] if on_streets else km(a, b) * 1.3
     up, hills = climb_m(a, b)
