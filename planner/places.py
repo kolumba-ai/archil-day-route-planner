@@ -402,6 +402,8 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
         v = {"name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "open": open_, "close": close,
              "hours_known": hours is not None, "dogs": dogs, "dogs_known": dog is not None,
              "vegetarian_ok": tags.get("diet:vegetarian", "yes") != "no",
+             # gluten-free: True if tagged yes/only, False if tagged no, None when OSM doesn't say
+             "gluten_free_ok": {"yes": True, "only": True, "limited": True, "no": False}.get(tags.get("diet:gluten_free")),
              "tags": [t for t in (tags.get("cuisine", "").split(";") + [category]) if t],
              "cuisine": sorted(cuisine_of(tags)), "food_truck": is_food_truck(tags),
              "source": "https://www.openstreetmap.org/%s/%s" % (e["type"], e["id"])}

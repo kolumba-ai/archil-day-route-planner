@@ -609,7 +609,7 @@ def limits_view(ctx, req):
         rows.append(("Walking", "up to %g km in total, at %g km/h" % (lim["max_km"], lim["pace_kmh"])))
         rows.append(("Hills", "wanted" if lim.get("prefer_hills") else
                      "avoid (climbs over %d m)" % lim.get("hills_max_m", 0) if lim.get("avoid_hills") else "fine"))
-        rows.append(("Diet", ", ".join(lim.get("diets") or []) or "no restrictions"))
+        rows.append(("Diet", ", ".join(d.replace("_", "-") for d in lim.get("diets") or []) or "no restrictions"))
         if lim.get("avoid_foods"):
             rows.append(("Avoids", ", ".join(lim["avoid_foods"])))
         rows.append(("Museums", "at most %d min" % lim["museum_max_min"]))

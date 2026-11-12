@@ -3,29 +3,34 @@
   "name": "Ana",
   "kind": "person",
   "walking": {
-    "max_km": 6,
-    "hills": "avoid",
-    "pace_kmh": 4.2,
-    "rest_every_min": 45
+    "max_km": 6.4,
+    "hills": "ok",
+    "pace_kmh": 4.8,
+    "rest_every_min": 60
   },
   "food": {
-    "diet": "vegetarian",
+    "diet": "gluten_free",
     "loves": [
-      "burritos",
-      "pastries"
+      "thai",
+      "coffee",
+      "burgers",
+      "salads",
+      "steaks"
     ],
-    "avoids": [
-      "cilantro"
-    ]
+    "avoids": []
   },
   "activities": {
-    "museum_max_min": 90,
+    "museum_max_min": 60,
     "likes": [
-      "art",
-      "views"
+      "views",
+      "water",
+      "churches",
+      "sacred music"
     ],
     "dislikes": [
-      "crowds"
+      "tight indoor spaces",
+      "large crowds",
+      "noisy restaurants"
     ]
   },
   "weather": {
@@ -33,8 +38,8 @@
     "wind_tolerance": "medium"
   },
   "body": {
-    "weight_kg": 60,
-    "height_cm": 165,
+    "weight_kg": 72.6,
+    "height_cm": 177.8,
     "backpack_kg": 0
   },
   "safety": {

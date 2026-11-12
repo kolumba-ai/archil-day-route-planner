@@ -37,13 +37,33 @@ def day(museum="Presidio Tunnel Tops", beach="Crissy Field", food="Papalote", ca
 class CombineTests(unittest.TestCase):
     def test_A1_strictest_limit_wins(self):
         lim = ctx("me", "ana", "biscuit", dog=True)["limits"]
-        self.assertEqual(lim["max_km"], 6)
-        self.assertEqual(lim["pace_kmh"], 4.2)
+        self.assertEqual(lim["max_km"], 6.4)  # Ana's 4 miles beats my 9 km and Biscuit's 10
+        self.assertEqual(lim["pace_kmh"], 4.8)  # 3 mph
+        self.assertFalse(lim["avoid_hills"])    # nobody avoids hills
+        slow = copy.deepcopy(profiles("ana")[0])
+        slow["walking"].update(pace_kmh=4.0, hills="avoid")
+        lim = routes.combine(profiles("me") + [slow], request.parse("coffee"))["limits"]
+        self.assertEqual(lim["pace_kmh"], 4.0)
         self.assertTrue(lim["avoid_hills"])
 
     def test_A2_diets_merge(self):
-        self.assertEqual(ctx("me", "ana")["limits"]["diets"], ["vegetarian"])
+        self.assertEqual(ctx("me", "ana")["limits"]["diets"], ["gluten_free"])
         self.assertEqual(ctx("me")["limits"]["diets"], [])
+
+    def test_A2b_gluten_free_and_loves(self):
+        ana = profiles("ana")[0]
+        self.assertTrue(routes.loves(ana, "food", ["burger"]))        # "burgers" = OSM burger
+        self.assertTrue(routes.loves(ana, "food", ["steak_house"]))   # "steaks"
+        self.assertTrue(routes.loves(ana, "cafe", []))                # coffee at a cafe
+        self.assertFalse(routes.loves(ana, "food", ["mexican"]))
+        self.assertTrue(routes.dislikes(ana, "crowd") and routes.dislikes(ana, "indoor"))
+        c = routes.combine(profiles("me") + [ana], request.parse("coffee"), start=TOWN_START, conditions=TOWN_WEATHER)
+        cafe = dict(TOWN["cafe"][0], gluten_free_ok=False)
+        self.assertIn("Corner Coffee: no gluten-free options", routes.simulate([("cafe", cafe)], c)["violations"])
+        unknown = routes.simulate([("cafe", dict(cafe, gluten_free_ok=None))], c)
+        known = routes.simulate([("cafe", dict(cafe, gluten_free_ok=True))], c)
+        self.assertFalse(unknown["violations"])
+        self.assertGreater(known["scores"]["Ana"], unknown["scores"]["Ana"])
 
     def test_A3_dog_flag(self):
         self.assertTrue(planner.parse_request("Saturday with Biscuit")["dog"])

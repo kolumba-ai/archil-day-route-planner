@@ -241,6 +241,8 @@ def simulate(stops, ctx):
                 notes.append("Dogs can't go into %s; one person walks Biscuit outside" % v["name"])
         if "vegetarian" in lim["diets"] and cat in ("cafe", "food") and not v.get("vegetarian_ok", True):
             violations.append("%s: nothing vegetarian" % v["name"])
+        if "gluten_free" in lim["diets"] and cat in ("cafe", "food") and v.get("gluten_free_ok") is False:
+            violations.append("%s: no gluten-free options" % v["name"])
         if v.get("verify_error"):
             notes.append("Couldn't check %s online; confirm its hours and dog rules" % v["name"])
         if cat == "food" and (ctx.get("request") or {}).get("food_truck") and not v.get("food_truck"):
@@ -295,6 +297,26 @@ def group_score(vals):
     return 0.6 * min(vals) + 0.4 * sum(vals) / len(vals)
 
 
+# What people love, in their words, as OpenStreetMap cuisine tags ("burgers" -> burger).
+LOVE_TAGS = {"burger": {"burger"}, "steak": {"steak_house", "steak"}, "salad": {"salad"}, "thai": {"thai"},
+             "coffee": {"coffee_shop", "coffee", "cafe"}, "burrito": {"burrito", "mexican", "burritos"},
+             "pastrie": {"pastry", "bakery", "pastries"}, "pizza": {"pizza"}, "sushi": {"sushi", "japanese"}}
+
+
+def loves(person, cat, tags):
+    """Does the place serve something this person loves? Plurals and OSM tag names both count."""
+    tags = {t.lower() for t in tags} | ({"cafe"} if cat == "cafe" else set())
+    for word in person["food"]["loves"]:
+        stem = word.lower().strip().rstrip("s")
+        if tags & (LOVE_TAGS.get(stem, set()) | {word.lower(), stem}):
+            return True
+    return False
+
+
+def dislikes(person, word):
+    return any(word in d.lower() for d in person["activities"].get("dislikes", []))
+
+
 def score_itinerary(it, stops, ctx, sunset):
     lim = ctx["limits"]
     per = {}
@@ -314,7 +336,7 @@ def score_itinerary(it, stops, ctx, sunset):
         crowd = 0
         for cat, v in stops:
             tags = v.get("tags", [])
-            if "crowds" in tags and "crowds" in p["activities"]["dislikes"]:
+            if "crowds" in tags and dislikes(p, "crowd"):
                 crowd += 0.08
             if cat == "museum":
                 if v.get("kind") == "museum":
@@ -324,11 +346,15 @@ def score_itinerary(it, stops, ctx, sunset):
                         s = min(1.0, p["activities"]["museum_max_min"] / 90.0)
                         if set(tags) & set(p["activities"]["likes"]):
                             s = min(1.0, s + 0.1)
-                        parts.append(s)
+                        if dislikes(p, "indoor"):  # "tight indoor spaces"
+                            s -= 0.15
+                        parts.append(clip(s))
                 else:  # they asked for a museum; an outdoor swap is a compromise
                     parts.append(0.75 if "views" in p["activities"]["likes"] else 0.55)
             elif cat in ("cafe", "food"):
-                parts.append(1.0 if set(tags) & set(p["food"]["loves"]) else 0.7)
+                parts.append(1.0 if loves(p, cat, tags) else 0.7)
+                if p["food"].get("diet") == "gluten_free":  # known gluten-free options beat unknown ones
+                    parts.append({True: 1.0, None: 0.8}.get(v.get("gluten_free_ok"), 0.0))
                 if cat == "food" and (ctx.get("request") or {}).get("food_truck"):
                     parts.append(1.0 if v.get("food_truck") else 0.5)  # they asked for a food truck
             elif cat == "park":
@@ -336,6 +362,8 @@ def score_itinerary(it, stops, ctx, sunset):
             elif cat in ("beach", "waterfront"):
                 wx = it["weather_at_end"]
                 s = 1.0 if cat == "beach" else (0.95 if "views" in p["activities"]["likes"] else 0.85)
+                if "water" in p["activities"]["likes"]:
+                    s = min(1.0, s + 0.1)
                 if wx["fog"]:
                     s -= 0.3
                 tol = {"low": 15, "medium": 25, "high": 40}[p["weather"]["wind_tolerance"]]
