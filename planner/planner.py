@@ -163,6 +163,11 @@ def resolve_start(req):
 ICONS = {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️", "park": "🌳", "waterfront": "🌊"}
 
 
+def place_name(p):
+    """ "Start (Noe Valley)" -> "Noe Valley" (the demo's start); other places as they are."""
+    return re.sub(r"^Start \((.*)\)$", r"\1", p.get("name", ""))
+
+
 def understood(req, start, city):
     """What the agent understood, for the person to confirm before anyone else is contacted."""
     stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), request_mod.LABELS.get(c, c),
@@ -175,7 +180,7 @@ def understood(req, start, city):
         food.append("from a food truck")
     lines = ["Here's what I understood:",
              "📅 %s, %s" % (req["day"], city),
-             "📍 Start: %s at %s" % (start["name"], routes.hhmm(req["start_min"])),
+             "📍 Start: %s at %s" % (place_name(start), routes.hhmm(req["start_min"])),
              "🗺️ " + stops]
     if food:
         lines.append("🍽️ " + " ".join(food))
@@ -518,6 +523,107 @@ def routes_locally(run, disk, ctx, candidates, specs):
     return chosen
 
 
+NAME_SYSTEM = """You name day-out routes, like a friend suggesting them by text. For each plan (JSON, in order), write a short, natural, distinct name of 2 to 5 words that captures the outing's character, e.g. "Hawthorne Art & Riverside Sunset", "Vegan Lunch, Esplanade Sunset", "Gallery Morning, Taco Afternoon".
+Rules:
+- Describe the outing (its kinds of stops and highlights); don't just list stop names. Use at most ONE stop name, and only if it is short and recognizable.
+- Make each name differ by what differs between the plans (look at which stops change); a shared final stop doesn't need repeating in every name.
+- Use only facts given. No emoji, no quotes, no plan numbers."""
+NAME_SCHEMA = {"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}},
+               "required": ["names"], "additionalProperties": False}
+SHORT = {"cafe": "Coffee", "museum": "Art", "food": "Lunch", "beach": "Beach", "park": "Park", "waterfront": "Riverside"}
+
+
+def name_routes(plans, req):
+    """A name for each route: written by the LLM, checked; else from what makes the route different."""
+    from . import understand
+    names = None
+    who = understand.provider()
+    if who != "rules" and not understand.rules_mode() and plans:
+        facts = [{"stops": [{"name": s["name"], "kind": s["category"]} for s in p["stops"]],
+                  "sunset_stop": req.get("sunset_stop"), "city": p.get("city")} for p in plans]
+        try:
+            got = understand.ask_model(who, NAME_SYSTEM, json.dumps(facts, ensure_ascii=False), NAME_SCHEMA,
+                                       "route_names", timeout=15).get("names") or []
+            got = [re.sub(r"[\"“”]", "", n).strip() for n in got]
+            if (len(got) == len(plans) and len(set(n.lower() for n in got)) == len(got)
+                    and all(0 < len(n) <= 48 for n in got)):
+                names = got
+        except Exception as e:
+            print("Route naming failed, using built-in names: %r" % e)
+    if not names:
+        names = []
+        for p in plans:
+            others = {s["name"] for q in plans if q is not p for s in q["stops"]}
+            own = [s for s in p["stops"] if s["name"] not in others] or p["stops"]
+            lead = max(own, key=lambda s: ANCHOR_RANK.get(s["category"], 0))
+            tail = SHORT.get(req.get("sunset_stop") or "", "")
+            name = "%s %s" % (re.sub(r"\s*\(.*?\)", "", lead["name"]), "& %s Sunset" % tail if tail else "Route")
+            names.append(name if name not in names else "%s %d" % (name, p["rank"]))
+    for p, n in zip(plans, names):
+        p["name"] = n
+
+
+ANCHOR_RANK = {"museum": 5, "waterfront": 4, "beach": 4, "park": 3, "food": 2, "cafe": 1}
+
+
+def save_outing(run, req, plans):
+    """Keep the routes with the request and the limits they were planned under:
+    data/saved/<date>-<run>.json (and the outing disk has plans.json, request.json too)."""
+    ctx = run.state.get("ctx") or {}
+    out = {"saved": time.strftime("%Y-%m-%d %H:%M"), "run": run.id, "request": req.get("text"),
+           "understood": {k: v for k, v in req.items() if k != "text"},
+           "limits": limits_view(ctx, req),
+           "routes": [{"rank": p["rank"], "name": p.get("name"), "depart": p["depart"], "end": p["end"],
+                       "start": p.get("start"), "stops": p["stops"],
+                       "legs": [{k: v for k, v in l.items() if k != "path"} for l in p["legs"]],
+                       "return_leg": {k: v for k, v in p["return_leg"].items() if k != "path"} if p.get("return_leg") else None,
+                       "walk_km": p["walk_km"], "climb_m": p["climb_m"], "travel_min": p["travel_min"],
+                       "notes": p["notes"], "why": p.get("why")} for p in plans]}
+    folder = os.path.join(DATA, "saved")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "%s-%s.json" % (time.strftime("%Y%m%d-%H%M"), run.id))
+    with open(path, "w") as f:
+        json.dump(out, f, indent=1, ensure_ascii=False)
+    return path
+
+
+def limits_view(ctx, req):
+    """The constraints the routes were planned under, as label/value rows for people to read."""
+    lim = ctx.get("limits") or {}
+    rows = [("Day", "%s in %s" % (req["day"], req.get("city") or "San Francisco")),
+            ("Start", "%s at %s" % (place_name(ctx.get("start") or {"name": "?"}),
+                                    routes.hhmm(routes.round_departure(None, req["start_min"]))))]
+    if req.get("end_min"):
+        rows.append(("Finish", ("back at the start by %s" if req.get("return_to_start") else "by %s")
+                     % routes.hhmm(req["end_min"])))
+    elif req.get("return_to_start"):
+        rows.append(("Finish", "back at the start"))
+    rows.append(("Stops", " → ".join(request_mod.LABELS.get(c, c) for c in req["categories"])))
+    if req.get("sunset_stop"):
+        rows.append(("At sunset", "%s (sunset %s)" % (request_mod.LABELS.get(req["sunset_stop"], req["sunset_stop"]),
+                                                     (ctx.get("conditions") or {}).get("sunset", "?"))))
+    if req.get("cuisines") or req.get("food_truck"):
+        rows.append(("Food", " ".join(filter(None, [" or ".join(c.capitalize() for c in req.get("cuisines") or []),
+                                                     "from a food truck" if req.get("food_truck") else ""]))))
+    if lim:
+        rows.append(("Walking", "up to %g km in total, at %g km/h" % (lim["max_km"], lim["pace_kmh"])))
+        rows.append(("Hills", "wanted" if lim.get("prefer_hills") else
+                     "avoid (climbs over %d m)" % lim.get("hills_max_m", 0) if lim.get("avoid_hills") else "fine"))
+        rows.append(("Diet", ", ".join(lim.get("diets") or []) or "no restrictions"))
+        if lim.get("avoid_foods"):
+            rows.append(("Avoids", ", ".join(lim["avoid_foods"])))
+        rows.append(("Museums", "at most %d min" % lim["museum_max_min"]))
+        rows.append(("Dog", "yes (Biscuit): dog-friendly stops only" if lim.get("dog") else "no"))
+        rows.append(("Street crime", {"low": "low tolerance: avoid hotspots (bus or taxi instead)",
+                                      "medium": "medium: avoid the worst hotspots",
+                                      "high": "high: walk anyway, hotspots noted"}.get(lim.get("crime_tolerance"),
+                                                                                      lim.get("crime_tolerance"))))
+    people = [p["name"] for p in ctx.get("people") or []]
+    if people:
+        rows.append(("Group", ", ".join(people) + " (the most cautious limits apply)"))
+    return [{"label": a, "value": b} for a, b in rows]
+
+
 def finish(run, req, disk, work, chosen):
     reasons = run.state.get("reasons") or []
     plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco",
@@ -534,9 +640,16 @@ def finish(run, req, disk, work, chosen):
     elif plans and streets.enabled():
         run.say("me", "Street routing is unavailable right now: the map shows straight lines and walking times "
                       "are estimates.", agent=True)
+    name_routes(plans, req)
+    limits = limits_view(run.state.get("ctx") or {}, req)
     disk.write_json(work, "plans.json", plans)
     run.state.update(plans=plans, votes={})
-    run.emit("plans", plans=plans)
+    run.emit("plans", plans=plans, limits=limits)
+    if plans:
+        try:
+            run.emit("saved", path=os.path.relpath(save_outing(run, req, plans), os.path.dirname(HERE)))
+        except OSError as e:
+            run.emit("saved", error=str(e)[:100])
     if plans:
         voters = ["Me"] + (["Ana"] if "ana" in req["with"] else [])
         run.state["voters"] = voters

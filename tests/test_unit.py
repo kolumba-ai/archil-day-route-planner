@@ -693,5 +693,44 @@ class BusTests(unittest.TestCase):
         self.assertIsNone(transit.best_bus(net, b, a))  # this route only runs the other way
 
 
+class NamesLimitsTests(unittest.TestCase):
+    """S: departures on the 5 minutes, a name per route, the limits shown and saved with them."""
+
+    def test_S1_departures_round_to_five_minutes(self):
+        self.assertEqual(routes.round_departure(600, 642), 640)    # 10:42 -> 10:40
+        self.assertEqual(routes.round_departure(600, 643), 645)    # 10:43 -> 10:45
+        self.assertEqual(routes.round_departure(630, 643, 645), 645)
+        self.assertEqual(routes.round_departure(640, 653, 652), 650)  # not past closing
+        self.assertEqual(routes.round_departure(645, 653, 653), 653)  # no 5-minute slot fits: exact
+        for p in town_plans(AnyCityTests.BASE):
+            for s in p["stops"]:
+                self.assertEqual(routes.to_min(s["leave"]) % 5, 0, s)
+
+    def test_S2_names_limits_and_saving(self):
+        import json, tempfile
+        from unittest import mock
+        plans = town_plans(AnyCityTests.BASE)
+        for i, p in enumerate(plans, 1):
+            p["rank"] = i
+        req = request.parse(AnyCityTests.BASE + ", avoiding hills, with Biscuit")
+        planner.name_routes(plans, req)  # tests run without an LLM: built-in names
+        names = [p["name"] for p in plans]
+        self.assertEqual(len(set(names)), len(names))
+        self.assertTrue(all("Park" in n for n in names), names)  # the park is what differs
+        run = planner.Run()
+        run.state["ctx"] = c = routes.combine(profiles("me", "biscuit"), req, start=TOWN_START, conditions=TOWN_WEATHER)
+        rows = {r["label"]: r["value"] for r in planner.limits_view(c, req)}
+        self.assertEqual(rows["Start"], "Test Church at 09:00")
+        self.assertIn("2 km", rows["Walking"])
+        self.assertIn("avoid", rows["Hills"])
+        self.assertIn("Biscuit", rows["Dog"])
+        self.assertIn("low tolerance", rows["Street crime"])
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(planner, "DATA", d):
+            saved = json.load(open(planner.save_outing(run, req, plans)))
+        self.assertEqual(saved["request"], req["text"])
+        self.assertEqual([r["name"] for r in saved["routes"]], names)
+        self.assertEqual(saved["limits"][0]["label"], "Day")
+
+
 if __name__ == "__main__":
     unittest.main()

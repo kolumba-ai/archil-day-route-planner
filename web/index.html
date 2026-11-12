@@ -143,7 +143,7 @@
 const $ = id => document.getElementById(id);
 const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset'},
                  ana: {who:'Ana', title:"Ana's agent", placeholder:"Reply 1, 2 or 3 to pick a plan"} };
-let run = null, es = null, runInfo = {}, events = [], plans = [], votes = {}, decided = null, selected = 0, map, layer, startPlace = null;
+let run = null, es = null, runInfo = {}, events = [], plans = [], limits = [], votes = {}, decided = null, selected = 0, map, layer, startPlace = null;
 
 // ---------------------------------------------------------------- phones
 function buildPhone(id) {
@@ -281,7 +281,7 @@ async function loadProfiles() {
 // ---------------------------------------------------------------- runs and events
 function follow(id, fresh) {
   if (es) es.close();
-  run = id; events = []; plans = []; votes = {}; decided = null; selected = 0; startPlace = null;
+  run = id; events = []; plans = []; limits = []; votes = {}; decided = null; selected = 0; startPlace = null;
   runInfo = {fresh};
   renderPlans(); renderTech();
   es = new EventSource('/api/events?run=' + id);
@@ -317,7 +317,8 @@ function handle(e) {
     case 'need_start':
       $('map-pills').innerHTML = '<span class="empty" style="padding:0">⚠ Waiting for a starting point</span>';
       break;
-    case 'plans': plans = e.plans; selected = 0; renderPlans(); break;
+    case 'plans': plans = e.plans; limits = e.limits || []; selected = 0; renderPlans(); break;
+    case 'saved': if (e.path) $('backend').textContent += ' · Saved to ' + e.path; break;
     case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply 1, 2 or 3
       document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' textarea').placeholder =
         'Reply ' + e.ranks.join(', ').replace(/, (\d)$/, ' or $1') + ' to pick a plan';
@@ -345,7 +346,7 @@ function renderPlans() {
   if (!plans.length) { pills.innerHTML = '<span class="empty" style="padding:0">' + (run ? 'Planning…' : 'Send a message to start.') + '</span>'; }
   plans.forEach((p, i) => {
     const b = document.createElement('button'); b.className = 'pill' + (i === selected ? ' on' : '');
-    b.textContent = 'Plan ' + p.rank + (decided === p.rank ? ' ✓' : '');
+    b.textContent = p.rank + '. ' + (p.name || 'Plan ' + p.rank) + (decided === p.rank ? ' ✓' : '');
     b.onclick = () => { selected = i; renderPlans(); }; pills.appendChild(b);
   });
   if (plans[selected]) {
@@ -359,7 +360,7 @@ function renderPlans() {
   if (!plans.length) { box.innerHTML = '<div class="empty">' + (run ? 'Planning…' : 'Plans appear here.') + '</div>'; return; }
   plans.forEach(p => {
     const d = document.createElement('div'); d.className = 'plan' + (decided === p.rank ? ' decided' : '');
-    let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
+    let h = '<h3>Plan ' + p.rank + (p.name ? ' · ' + esc(p.name) : '') + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
             p.walk_km + ' km walking · 👟 ≈' + (p.steps_typical || 0).toLocaleString() + ' steps · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
     // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
     const LEGNAME = l => l.mode === 'walk' ? '🚶 Walk' : l.bus ? '🚌 Bus ' + esc(l.bus.route) : '🚕 Ride';
@@ -390,6 +391,12 @@ function renderPlans() {
     h += '<div class="note">from branch <code>' + esc(p.branch) + '</code></div>';
     d.innerHTML = h; d.onclick = () => { selected = p.rank - 1; renderPlans(); }; box.appendChild(d);
   });
+  if (limits.length) {  // the constraints every route above was planned under
+    const l = document.createElement('div'); l.className = 'plan limits';
+    l.innerHTML = '<h3>Limits</h3><table>' + limits.map(r => '<tr><td style="width:110px"><b>' + esc(r.label) +
+      '</b></td><td>' + esc(r.value) + '</td></tr>').join('') + '</table>';
+    box.appendChild(l);
+  }
 }
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 

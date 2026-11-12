@@ -4,14 +4,32 @@
     {
       "name": "day-planner",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["server.py"],
+      "runtimeArgs": [
+        "server.py"
+      ],
       "port": 8765
     },
     {
       "name": "day-planner-sandboxes",
       "runtimeExecutable": "env",
-      "runtimeArgs": ["PLANNER_ROUTES=sandboxes", "python3", "server.py"],
+      "runtimeArgs": [
+        "PLANNER_ROUTES=sandboxes",
+        "python3",
+        "server.py"
+      ],
       "port": 8765
+    },
+    {
+      "name": "day-planner-test",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "PORT=8766",
+        "PLANNER_SEARCH=seed",
+        "PLANNER_DECIDER=rules",
+        "python3",
+        "server.py"
+      ],
+      "port": 8766
     }
   ]
 }

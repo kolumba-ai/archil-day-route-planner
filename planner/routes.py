@@ -165,6 +165,16 @@ def transit_key(p):
     return "%.5f,%.5f" % (p["lat"], p["lon"])
 
 
+def round_departure(arrive, leave, close=None):
+    """Departures on the nearest 5 minutes (10:00, 11:35), when feasible: never less than 10
+    minutes at a stop and never past closing. Arrivals stay exact."""
+    nearest = int(5 * round(leave / 5.0))
+    for t in (nearest, nearest + 5, nearest - 5):
+        if t % 5 == 0 and (arrive is None or t >= arrive + 10) and (close is None or t <= close):
+            return t
+    return leave
+
+
 def hhmm(m):
     return "%02d:%02d" % (int(m) // 60, int(m) % 60)
 
@@ -190,7 +200,7 @@ def simulate(stops, ctx):
     cond = ctx["conditions"]
     sunset = to_min(cond["sunset"])
     start = ctx.get("start") or START
-    start_min = ctx.get("start_min", START_TIME)
+    start_min = round_departure(None, ctx.get("start_min", START_TIME))
     t = start_min
     idle = 0
     here = start
@@ -218,7 +228,7 @@ def simulate(stops, ctx):
             dwell = min(lim["museum_max_min"], 90) if v.get("kind") == "museum" else DWELL["outdoor_alternative"]
         else:
             dwell = DWELL.get(cat, 45)
-        leave = arrive + dwell
+        leave = round_departure(arrive, arrive + dwell, to_min(v["close"]))
         if arrive < to_min(v["open"]) or leave > to_min(v["close"]):
             violations.append("%s is closed then (%s-%s)" % (v["name"], v["open"], v["close"]))
         if lim["dog"]:

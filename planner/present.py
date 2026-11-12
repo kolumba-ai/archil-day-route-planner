@@ -23,7 +23,7 @@ Write the messages as JSON with these fields:
 
 Rules for every text:
 - Keep every fact exactly as given. Never invent places, times or facts. Name every stop of every plan, exactly as written.
-- A plan text is short: the plan number, the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥. Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
+- A plan text is short: the plan number and its name ("name", exactly as given), the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥. Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
 - Use emoji icons that match the content: 🕙 departure, ☕ cafe, 🏛️ museum, 🌳 park or trail, 🌯 burritos or lunch, 🏖️ beach, 🌊 riverside or waterfront, 🌅 a stop at sunset, 🐕 the dog, and start each plan with 1️⃣, 2️⃣ or 3️⃣.
 - Plain text with line breaks. No markdown: no headings, bold or asterisks.
 - Address the reader in the second person. If the reader is Ana, call the person who invited her "your friend"."""
@@ -60,8 +60,8 @@ def template(plans, reader, body=None):
               " 🐕" if any("Biscuit" in p["scores"] for p in plans) else "")]
     for p in plans:
         # On the phone: just when you leave and the stops. Details live in the Routes tab.
-        lines = ["%s Plan %d · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= 3 else p["rank"], p["rank"],
-                                                   p.get("depart", "10:00"))]
+        lines = ["%s %s · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= 3 else p["rank"],
+                                             p.get("name") or "Plan %d" % p["rank"], p.get("depart", "10:00"))]
         lines += ["%s %s" % (_stop_icon(s), s["name"]) for s in p["stops"]]
         if p.get("return_leg"):
             lines.append("🏁 back at the start by %s" % p.get("end", ""))
@@ -75,7 +75,7 @@ def template(plans, reader, body=None):
 
 
 def _facts(plans, body=None):
-    return [{"rank": p["rank"], "city": p.get("city") or "San Francisco", "start": p.get("start"), "depart": p.get("depart", "10:00"),
+    return [{"rank": p["rank"], "name": p.get("name"), "city": p.get("city") or "San Francisco", "start": p.get("start"), "depart": p.get("depart", "10:00"),
              "stops": [{"name": s["name"], "category": s["category"]} for s in p["stops"]],
              "your_steps": fitness.estimate(p, body)["steps"],
              "your_kcal": fitness.estimate(p, body).get("kcal")} for p in plans]
@@ -135,7 +135,8 @@ def number(rank):
 
 def decision(plan, rank, why, body=None):
     """The final decision, with the same icons as the plans, plus the reader's own steps."""
-    lines = ["✅ Decided: plan %s (%s)." % (number(rank), why), "🕙 leave at %s" % plan.get("depart", "10:00")]
+    lines = ["✅ Decided: plan %s%s (%s)." % (number(rank), " · " + plan["name"] if plan.get("name") else "", why),
+             "🕙 leave at %s" % plan.get("depart", "10:00")]
     lines += ["%s %s · %s" % (_stop_icon(s), s["name"], s["arrive"]) for s in plan["stops"]]
     if plan.get("return_leg"):
         lines.append("🔙 back at %s" % plan.get("start", "the start"))

@@ -104,13 +104,16 @@ print("ROUTES " + json.dumps({
 '''
 
 
+SANDBOX_FILES = ("__init__.py", "env.py", "routes.py", "crime.py", "route_worker.py", "conditions.json")
+
+
 def _code_tarball():
     buf = io.BytesIO()
-    # The crime files stay behind: sandboxes get only the cells along each walk, in ctx["crime"].
-    skip = lambda ti: None if ("__pycache__" in ti.name or ti.name.endswith(".pyc")
-                               or "crime_data" in ti.name) else ti
+    # Only what a route sandbox runs: the route simulation and its helpers. Venue data, crime
+    # files and bus routes travel inside the outing (ctx), already cut down to this outing.
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        tar.add(os.path.join(ROOT, "planner"), arcname="planner", filter=skip)
+        for name in SANDBOX_FILES:
+            tar.add(os.path.join(ROOT, "planner", name), arcname="planner/" + name)
     return buf.getvalue()
 
 
