@@ -220,7 +220,7 @@ def simulate(stops, ctx):
     if last_cat == "beach" and wx["fog"]:
         notes.append("Fog expected at %s around %s" % (last["name"], timeline[-1]["arrive"]))
 
-    it = {"depart": hhmm(start_min), "start": start["name"], "start_lat": start["lat"], "start_lon": start["lon"],
+    it = {"depart": hhmm(start_min), "start": start["name"], "city": ctx.get("city") or "San Francisco", "start_lat": start["lat"], "start_lon": start["lon"],
           "stops": timeline, "legs": legs, "walk_km": walk_km, "climb_m": climb,
           "travel_min": sum(lg["min"] for lg in legs) + (back["min"] if back else 0), "idle_min": idle,
           "return_leg": back,

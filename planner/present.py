@@ -13,7 +13,7 @@ from . import fitness
 MODEL = "claude-opus-5-5"
 NUMBERS = ["1️⃣", "2️⃣", "3️⃣"]
 
-SYSTEM = """You are a friendly personal assistant agent texting the person you work for about a day out in San Francisco.
+SYSTEM = """You are a friendly personal assistant agent texting the person you work for about a day out in the city given with the plans ("city"); never name another city.
 You get a JSON list of plans the planner already chose, and who is reading.
 
 Write the messages as JSON with these fields:
@@ -75,7 +75,7 @@ def template(plans, reader, body=None):
 
 
 def _facts(plans, body=None):
-    return [{"rank": p["rank"], "depart": p.get("depart", "10:00"),
+    return [{"rank": p["rank"], "city": p.get("city") or "San Francisco", "start": p.get("start"), "depart": p.get("depart", "10:00"),
              "stops": [{"name": s["name"], "category": s["category"]} for s in p["stops"]],
              "your_steps": fitness.estimate(p, body)["steps"],
              "your_kcal": fitness.estimate(p, body).get("kcal")} for p in plans]
@@ -83,7 +83,7 @@ def _facts(plans, body=None):
 
 def with_claude(plans, reader, body=None):
     import anthropic
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(max_retries=1)  # a stalled call must not hold up the phones
     resp = client.beta.messages.create(
         model=MODEL,
         max_tokens=4000,
@@ -93,7 +93,7 @@ def with_claude(plans, reader, body=None):
                    % (reader, json.dumps(_facts(plans, body), ensure_ascii=False))}],
         extra_body={"fallbacks": "default",
                     "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}}},
-        timeout=60,
+        timeout=25,
     )
     if resp.stop_reason == "refusal":
         raise RuntimeError("Claude declined")
