@@ -26,6 +26,8 @@ CATEGORY_HINT = {
     "museum": "museums",
     "food": "burrito places or casual Mexican restaurants",
     "beach": "beaches",
+    "waterfront": "riverside or waterfront walks, parks, piers and promenades",
+    "park": "parks",
 }
 
 
@@ -88,10 +90,12 @@ def search_category(category, context):
     return load_seed(category), "seed data"
 
 
-def search_radius_m(context):
-    """How far from the start to look: about 60% of the walking limit, 600 m to 2.5 km."""
+def search_radius_m(context, category=None):
+    """How far from the start to look: about 60% of the walking limit, 600 m to 2.5 km.
+    A riverside or beach is where the water is, so look up to 7 km out (a long leg is a ride)."""
     limit_km = context["limits"]["max_km"]
-    return int(max(600, min(2500, limit_km * 1000 * 0.6)))
+    r = int(max(600, min(2500, limit_km * 1000 * 0.6)))
+    return max(r, 7000) if category in ("waterfront", "beach") else r
 
 
 def search_city(category, context, mode):
@@ -101,7 +105,7 @@ def search_city(category, context, mode):
     from .request import DAYS
     day_index = DAYS.index(context["request"].get("day", "Saturday").lower())
     req = context["request"]
-    venues = places.find_venues(category, context["start"], search_radius_m(context), day_index=day_index,
+    venues = places.find_venues(category, context["start"], search_radius_m(context, category), day_index=day_index,
                                 cuisines=req.get("cuisines") or None, food_truck=bool(req.get("food_truck")))
     source = "OpenStreetMap"
     if venues and mode == "keenable":

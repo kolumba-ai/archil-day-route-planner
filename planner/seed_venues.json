@@ -1,311 +1,350 @@
 {
- "_note": "Offline fallback data. Locations are approximate and hours, dog rules and amenities are illustrative; live search replaces this.",
- "cafe": [
-  {
-   "name": "Ritual Coffee Roasters (Valencia)",
-   "lat": 37.7565,
-   "lon": -122.4213,
-   "open": "07:00",
-   "close": "18:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee",
-    "pastries"
-   ]
-  },
-  {
-   "name": "Philz Coffee (24th St)",
-   "lat": 37.7527,
-   "lon": -122.4147,
-   "open": "06:30",
-   "close": "18:30",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee"
-   ]
-  },
-  {
-   "name": "Sightglass (7th St)",
-   "lat": 37.777,
-   "lon": -122.4085,
-   "open": "07:00",
-   "close": "17:00",
-   "dogs": "no",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee",
-    "pastries"
-   ]
-  },
-  {
-   "name": "Blue Bottle (Ferry Building)",
-   "lat": 37.7955,
-   "lon": -122.3937,
-   "open": "07:00",
-   "close": "18:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee",
-    "views"
-   ]
-  },
-  {
-   "name": "Andytown (Outer Sunset)",
-   "lat": 37.7577,
-   "lon": -122.5056,
-   "open": "07:00",
-   "close": "16:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee",
-    "pastries"
-   ]
-  },
-  {
-   "name": "Equator Coffees (Round House)",
-   "lat": 37.8077,
-   "lon": -122.4747,
-   "open": "08:00",
-   "close": "17:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "coffee",
-    "views"
-   ]
-  }
- ],
- "museum": [
-  {
-   "name": "SFMOMA",
-   "lat": 37.7857,
-   "lon": -122.4011,
-   "open": "10:00",
-   "close": "17:00",
-   "dogs": "no",
-   "kind": "museum",
-   "tags": [
-    "art",
-    "crowds"
-   ]
-  },
-  {
-   "name": "de Young Museum",
-   "lat": 37.7715,
-   "lon": -122.4687,
-   "open": "09:30",
-   "close": "17:15",
-   "dogs": "no",
-   "kind": "museum",
-   "tags": [
-    "art",
-    "views"
-   ]
-  },
-  {
-   "name": "California Academy of Sciences",
-   "lat": 37.7699,
-   "lon": -122.4661,
-   "open": "09:30",
-   "close": "17:00",
-   "dogs": "no",
-   "kind": "museum",
-   "tags": [
-    "science",
-    "crowds"
-   ]
-  },
-  {
-   "name": "Exploratorium",
-   "lat": 37.8017,
-   "lon": -122.3973,
-   "open": "10:00",
-   "close": "17:00",
-   "dogs": "no",
-   "kind": "museum",
-   "tags": [
-    "science"
-   ]
-  },
-  {
-   "name": "Legion of Honor",
-   "lat": 37.7845,
-   "lon": -122.5008,
-   "open": "09:30",
-   "close": "17:15",
-   "dogs": "no",
-   "kind": "museum",
-   "tags": [
-    "art",
-    "views"
-   ]
-  },
-  {
-   "name": "Presidio Tunnel Tops (outdoor alternative)",
-   "lat": 37.8022,
-   "lon": -122.4555,
-   "open": "06:00",
-   "close": "21:00",
-   "dogs": "leash",
-   "kind": "outdoor_alternative",
-   "tags": [
-    "views"
-   ]
-  },
-  {
-   "name": "Lands End Trail (outdoor alternative)",
-   "lat": 37.7875,
-   "lon": -122.505,
-   "open": "06:00",
-   "close": "22:00",
-   "dogs": "leash",
-   "kind": "outdoor_alternative",
-   "tags": [
-    "views"
-   ]
-  }
- ],
- "food": [
-  {
-   "name": "La Taqueria",
-   "lat": 37.7509,
-   "lon": -122.4181,
-   "open": "11:00",
-   "close": "20:45",
-   "dogs": "no",
-   "vegetarian_ok": true,
-   "tags": [
-    "burritos",
-    "crowds"
-   ]
-  },
-  {
-   "name": "El Farolito (Mission)",
-   "lat": 37.7526,
-   "lon": -122.4183,
-   "open": "10:00",
-   "close": "23:59",
-   "dogs": "no",
-   "vegetarian_ok": true,
-   "tags": [
-    "burritos"
-   ]
-  },
-  {
-   "name": "Papalote (24th St)",
-   "lat": 37.7525,
-   "lon": -122.4229,
-   "open": "11:00",
-   "close": "21:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "burritos"
-   ]
-  },
-  {
-   "name": "Tacolicious (Marina)",
-   "lat": 37.8007,
-   "lon": -122.438,
-   "open": "11:30",
-   "close": "21:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "tacos"
-   ]
-  },
-  {
-   "name": "Gracias Madre",
-   "lat": 37.7615,
-   "lon": -122.419,
-   "open": "10:00",
-   "close": "22:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "vegan",
-    "mexican"
-   ]
-  },
-  {
-   "name": "Underdog (Inner Sunset)",
-   "lat": 37.764,
-   "lon": -122.466,
-   "open": "11:00",
-   "close": "21:00",
-   "dogs": "patio",
-   "vegetarian_ok": true,
-   "tags": [
-    "hot dogs"
-   ]
-  }
- ],
- "beach": [
-  {
-   "name": "Ocean Beach",
-   "lat": 37.7594,
-   "lon": -122.5107,
-   "open": "00:00",
-   "close": "23:59",
-   "dogs": "leash",
-   "area": "west",
-   "tags": [
-    "sunset"
-   ]
-  },
-  {
-   "name": "Baker Beach",
-   "lat": 37.7936,
-   "lon": -122.4836,
-   "open": "00:00",
-   "close": "23:59",
-   "dogs": "offleash",
-   "area": "northwest",
-   "tags": [
-    "sunset",
-    "views"
-   ]
-  },
-  {
-   "name": "Crissy Field East Beach",
-   "lat": 37.8045,
-   "lon": -122.4486,
-   "open": "00:00",
-   "close": "23:59",
-   "dogs": "offleash",
-   "area": "north",
-   "tags": [
-    "views"
-   ]
-  },
-  {
-   "name": "China Beach",
-   "lat": 37.788,
-   "lon": -122.491,
-   "open": "00:00",
-   "close": "23:59",
-   "dogs": "no",
-   "area": "northwest",
-   "tags": [
-    "sunset"
-   ]
-  },
-  {
-   "name": "Aquatic Park Beach",
-   "lat": 37.80719,
-   "lon": -122.42277,
-   "open": "00:00",
-   "close": "23:59",
-   "dogs": "leash",
-   "area": "north",
-   "tags": [
-    "views"
-   ]
-  }
- ]
+  "_note": "Offline fallback data. Locations are approximate and hours, dog rules and amenities are illustrative; live search replaces this.",
+  "cafe": [
+    {
+      "name": "Ritual Coffee Roasters (Valencia)",
+      "lat": 37.7565,
+      "lon": -122.4213,
+      "open": "07:00",
+      "close": "18:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee",
+        "pastries"
+      ]
+    },
+    {
+      "name": "Philz Coffee (24th St)",
+      "lat": 37.7527,
+      "lon": -122.4147,
+      "open": "06:30",
+      "close": "18:30",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee"
+      ]
+    },
+    {
+      "name": "Sightglass (7th St)",
+      "lat": 37.777,
+      "lon": -122.4085,
+      "open": "07:00",
+      "close": "17:00",
+      "dogs": "no",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee",
+        "pastries"
+      ]
+    },
+    {
+      "name": "Blue Bottle (Ferry Building)",
+      "lat": 37.7955,
+      "lon": -122.3937,
+      "open": "07:00",
+      "close": "18:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee",
+        "views"
+      ]
+    },
+    {
+      "name": "Andytown (Outer Sunset)",
+      "lat": 37.7577,
+      "lon": -122.5056,
+      "open": "07:00",
+      "close": "16:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee",
+        "pastries"
+      ]
+    },
+    {
+      "name": "Equator Coffees (Round House)",
+      "lat": 37.8077,
+      "lon": -122.4747,
+      "open": "08:00",
+      "close": "17:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "coffee",
+        "views"
+      ]
+    }
+  ],
+  "museum": [
+    {
+      "name": "SFMOMA",
+      "lat": 37.7857,
+      "lon": -122.4011,
+      "open": "10:00",
+      "close": "17:00",
+      "dogs": "no",
+      "kind": "museum",
+      "tags": [
+        "art",
+        "crowds"
+      ]
+    },
+    {
+      "name": "de Young Museum",
+      "lat": 37.7715,
+      "lon": -122.4687,
+      "open": "09:30",
+      "close": "17:15",
+      "dogs": "no",
+      "kind": "museum",
+      "tags": [
+        "art",
+        "views"
+      ]
+    },
+    {
+      "name": "California Academy of Sciences",
+      "lat": 37.7699,
+      "lon": -122.4661,
+      "open": "09:30",
+      "close": "17:00",
+      "dogs": "no",
+      "kind": "museum",
+      "tags": [
+        "science",
+        "crowds"
+      ]
+    },
+    {
+      "name": "Exploratorium",
+      "lat": 37.8017,
+      "lon": -122.3973,
+      "open": "10:00",
+      "close": "17:00",
+      "dogs": "no",
+      "kind": "museum",
+      "tags": [
+        "science"
+      ]
+    },
+    {
+      "name": "Legion of Honor",
+      "lat": 37.7845,
+      "lon": -122.5008,
+      "open": "09:30",
+      "close": "17:15",
+      "dogs": "no",
+      "kind": "museum",
+      "tags": [
+        "art",
+        "views"
+      ]
+    },
+    {
+      "name": "Presidio Tunnel Tops (outdoor alternative)",
+      "lat": 37.8022,
+      "lon": -122.4555,
+      "open": "06:00",
+      "close": "21:00",
+      "dogs": "leash",
+      "kind": "outdoor_alternative",
+      "tags": [
+        "views"
+      ]
+    },
+    {
+      "name": "Lands End Trail (outdoor alternative)",
+      "lat": 37.7875,
+      "lon": -122.505,
+      "open": "06:00",
+      "close": "22:00",
+      "dogs": "leash",
+      "kind": "outdoor_alternative",
+      "tags": [
+        "views"
+      ]
+    }
+  ],
+  "food": [
+    {
+      "name": "La Taqueria",
+      "lat": 37.7509,
+      "lon": -122.4181,
+      "open": "11:00",
+      "close": "20:45",
+      "dogs": "no",
+      "vegetarian_ok": true,
+      "tags": [
+        "burritos",
+        "crowds"
+      ]
+    },
+    {
+      "name": "El Farolito (Mission)",
+      "lat": 37.7526,
+      "lon": -122.4183,
+      "open": "10:00",
+      "close": "23:59",
+      "dogs": "no",
+      "vegetarian_ok": true,
+      "tags": [
+        "burritos"
+      ]
+    },
+    {
+      "name": "Papalote (24th St)",
+      "lat": 37.7525,
+      "lon": -122.4229,
+      "open": "11:00",
+      "close": "21:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "burritos"
+      ]
+    },
+    {
+      "name": "Tacolicious (Marina)",
+      "lat": 37.8007,
+      "lon": -122.438,
+      "open": "11:30",
+      "close": "21:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "tacos"
+      ]
+    },
+    {
+      "name": "Gracias Madre",
+      "lat": 37.7615,
+      "lon": -122.419,
+      "open": "10:00",
+      "close": "22:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "vegan",
+        "mexican"
+      ]
+    },
+    {
+      "name": "Underdog (Inner Sunset)",
+      "lat": 37.764,
+      "lon": -122.466,
+      "open": "11:00",
+      "close": "21:00",
+      "dogs": "patio",
+      "vegetarian_ok": true,
+      "tags": [
+        "hot dogs"
+      ]
+    }
+  ],
+  "beach": [
+    {
+      "name": "Ocean Beach",
+      "lat": 37.7594,
+      "lon": -122.5107,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "leash",
+      "area": "west",
+      "tags": [
+        "sunset"
+      ]
+    },
+    {
+      "name": "Baker Beach",
+      "lat": 37.7936,
+      "lon": -122.4836,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "offleash",
+      "area": "northwest",
+      "tags": [
+        "sunset",
+        "views"
+      ]
+    },
+    {
+      "name": "Crissy Field East Beach",
+      "lat": 37.8045,
+      "lon": -122.4486,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "offleash",
+      "area": "north",
+      "tags": [
+        "views"
+      ]
+    },
+    {
+      "name": "China Beach",
+      "lat": 37.788,
+      "lon": -122.491,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "no",
+      "area": "northwest",
+      "tags": [
+        "sunset"
+      ]
+    },
+    {
+      "name": "Aquatic Park Beach",
+      "lat": 37.80719,
+      "lon": -122.42277,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "leash",
+      "area": "north",
+      "tags": [
+        "views"
+      ]
+    }
+  ],
+  "waterfront": [
+    {
+      "name": "Crissy Field Promenade",
+      "lat": 37.8037,
+      "lon": -122.4566,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "leash",
+      "area": "north",
+      "tags": [
+        "views",
+        "sunset"
+      ]
+    },
+    {
+      "name": "Embarcadero at Pier 7",
+      "lat": 37.7997,
+      "lon": -122.3973,
+      "open": "00:00",
+      "close": "23:59",
+      "dogs": "leash",
+      "area": "north",
+      "tags": [
+        "views"
+      ]
+    },
+    {
+      "name": "Mission Creek Park",
+      "lat": 37.7726,
+      "lon": -122.3935,
+      "open": "06:00",
+      "close": "22:00",
+      "dogs": "leash",
+      "area": "north",
+      "tags": [
+        "water"
+      ]
+    }
+  ]
 }

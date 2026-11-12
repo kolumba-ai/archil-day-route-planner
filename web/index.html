@@ -219,6 +219,7 @@ const FIELDS = [
                   ['activities.dislikes','Dislikes','list']]],
   ['Weather', [['weather.cold_tolerance','Cold tolerance','select:low,medium,high'],
                ['weather.wind_tolerance','Wind tolerance','select:low,medium,high']]],
+  ['Safety', [['safety.crime_tolerance','Street crime tolerance (low = avoid)','select:low,medium,high']]],
   ['Body (private: used only for your own steps and calories)', [['body.weight_kg','Weight (kg)','number'],
                ['body.height_cm','Height (cm)','number'], ['body.backpack_kg','Backpack (kg)','number']]],
 ];
@@ -293,6 +294,13 @@ function handle(e) {
     case 'backend': $('backend').textContent = 'Disk: ' + e.name + ' · Search: ' + e.search + ' · OpenInstinct agents simulated';
                     runInfo.backend = e.name; runInfo.replan = e.replan_of; break;
     case 'message': bubble(e.phone, e.text, false, {ask: e.ask}); break;
+    case 'bus':
+      $('backend').textContent += e.ok ? ' · Bus routes (OpenStreetMap): ' + e.routes + ' lines' : ' · No bus data';
+      break;
+    case 'crime':
+      $('backend').textContent += e.ok ? ' · Street crime: ' + e.source + ' (' + e.covers + '), tolerance ' + e.tolerance
+                                       : ' · Street crime: ' + e.error;
+      break;
     case 'decided':
       $('backend').textContent += ' · Plans chosen by ' + e.by + (e.note ? ' (' + e.note.slice(0, 60) + ')' : '');
       break;
@@ -354,23 +362,27 @@ function renderPlans() {
     let h = '<h3>Plan ' + p.rank + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
             p.walk_km + ' km walking · 👟 ≈' + (p.steps_typical || 0).toLocaleString() + ' steps · ' + p.climb_m + ' m climb · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
     // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
-    const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️', park:'🌳'}[s.category] || '📍');
+    const LEGNAME = l => l.mode === 'walk' ? '🚶 Walk' : l.bus ? '🚌 Bus ' + esc(l.bus.route) : '🚕 Ride';
+    const BUSNOTE = l => l.bus ? '<br><span class="note">board at ' + esc(l.bus.board) + ', get off at ' + esc(l.bus.alight) +
+        ' (' + l.bus.stops + ' stops) · includes ~' + Math.round(l.bus.walk_km * 1000) + ' m walking and the wait</span>'
+        : (l.mode === 'walk' ? '' : ' (no bus route found: taxi or rideshare)');
+    const ICON = s => s.category === 'museum' && /outdoor/i.test(s.name) ? '🌳' : ({cafe:'☕', museum:'🏛️', food:'🌯', beach:'🏖️', waterfront:'🌊', park:'🌳'}[s.category] || '📍');
     let from = (p.start || 'Start (Noe Valley)'), at = p.depart || '10:00';
     h += '<table><tr><th style="width:96px">Time</th><th>Stop or way there</th></tr>';
     h += '<tr><td>' + at + '</td><td>🕙 Leave ' + esc(from) + '</td></tr>';
     p.stops.forEach((s, k) => {
       const l = p.legs[k], walk = l.mode === 'walk';
       const leaveAt = k === 0 ? at : p.stops[k - 1].leave;
-      h += '<tr class="leg"><td class="leg">' + leaveAt + '</td><td class="leg">' + (walk ? '🚶 Walk' : '🚌 Ride') + ' from ' + esc(from.replace(/^Start \((.*)\)$/, '$1')) +
+      h += '<tr class="leg"><td class="leg">' + leaveAt + '</td><td class="leg">' + LEGNAME(l) + ' from ' + esc(from.replace(/^Start \((.*)\)$/, '$1')) +
            ' to ' + esc(s.name) + ' · ' + l.min + ' min · ' + l.km + ' km' + (walk && l.climb_m ? ' · ' + l.climb_m + ' m climb' : '') +
-           (walk ? '' : ' (transit or car)') + '</td></tr>';
+           BUSNOTE(l) + '</td></tr>';
       h += '<tr><td>' + s.arrive + '–' + s.leave + '</td><td>' + ICON(s) + ' <b>' + esc(s.name) + '</b></td></tr>';
       from = s.name;
     });
     if (p.return_leg) {  // "back at the place of departure"
       const l = p.return_leg, last = p.stops[p.stops.length - 1];
-      h += '<tr class="leg"><td class="leg">' + last.leave + '</td><td class="leg">' + (l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') +
-           ' back to ' + esc(p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km</td></tr>';
+      h += '<tr class="leg"><td class="leg">' + last.leave + '</td><td class="leg">' + LEGNAME(l) +
+           ' back to ' + esc(p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km' + BUSNOTE(l) + '</td></tr>';
       h += '<tr><td>' + p.end + '</td><td>🏁 <b>Back at ' + esc(p.start || 'the start') + '</b></td></tr>';
     }
     h += '</table>' + (p.why ? '<div class="note">💡 ' + esc(p.why) + '</div>' : '') + '<div class="note">' + scoreText(p) + '</div>';
@@ -398,7 +410,7 @@ function drawMap() {
     L.polyline(line, l.mode === 'walk'
       ? {color:'#d9480f', weight:4}
       : {color:'#5f3dc4', weight:4, dashArray:'8 8'}).addTo(layer)
-      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' from ' + (k === 0 ? (p.start || 'the start') : p.stops[k - 1].name) + ' to ' +
+      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : l.bus ? '🚌 Bus ' + l.bus.route : '🚕 Ride') + ' from ' + (k === 0 ? (p.start || 'the start') : p.stops[k - 1].name) + ' to ' +
                    p.stops[k].name + ' · ' + l.min + ' min · ' + l.km + ' km' + (l.path ? '' : ' (straight line: no street route)'));
     line.forEach(pt => pts.push(pt));
   });
@@ -406,7 +418,7 @@ function drawMap() {
     const l = p.return_leg, last = p.stops[p.stops.length - 1];
     const line = l.path && l.path.length > 1 ? l.path : [[last.lat, last.lon], start];
     L.polyline(line, {color: l.mode === 'walk' ? '#d9480f' : '#5f3dc4', weight: 3, dashArray: '2 6'}).addTo(layer)
-      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : '🚌 Ride') + ' back to ' + (p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km');
+      .bindTooltip((l.mode === 'walk' ? '🚶 Walk' : l.bus ? '🚌 Bus ' + l.bus.route : '🚕 Ride') + ' back to ' + (p.start || 'the start') + ' · ' + l.min + ' min · ' + l.km + ' km');
   }
   L.circleMarker(start, {radius:6, color:'#555', fillOpacity:.9}).addTo(layer).bindTooltip('Start: ' + (p.start || 'Noe Valley') + ' · ' + (p.depart || '10:00'));
   p.stops.forEach((s, k) => L.marker([s.lat, s.lon], {icon: L.divIcon({className:'', html:

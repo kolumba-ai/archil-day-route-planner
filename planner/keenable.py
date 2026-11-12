@@ -162,10 +162,10 @@ def dog_policy(text, category):
     t = text.lower()
     if re.search(NO_DOGS, t):
         return "no"
-    if category == "beach" and re.search(OFF_LEASH, t):
+    if category in ("beach", "waterfront") and re.search(OFF_LEASH, t):
         return "offleash"
     if re.search(DOG_OK, t):
-        return "leash" if category in ("beach", "museum") else "patio"
+        return "leash" if category in ("beach", "museum", "waterfront", "park") else "patio"
     return None
 
 
@@ -269,7 +269,7 @@ def _verify(venue, category, city="San Francisco"):
     except Exception as e:
         v["verify_error"] = repr(e)
         return v
-    outdoors = category == "beach" or v.get("kind") == "outdoor_alternative"
+    outdoors = category in ("beach", "waterfront", "park") or v.get("kind") == "outdoor_alternative"
     # 1. The venue's own page, read by Keenable with our question (prompted fetch).
     page = best_page(res, v["name"])
     if page and _keyed():

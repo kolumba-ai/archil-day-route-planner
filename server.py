@@ -26,6 +26,13 @@ def interpret(run, who, text):
     low = text.lower().strip()
     has_plans = run is not None and bool(run.state.get("plans"))
     fresh = re.search(r"\bplan (monday|tuesday|wednesday|thursday|friday|saturday|sunday|a day|my|our)\b", low)
+    if who == "Me" and run is not None and run.state.get("needs_confirm") and not fresh:
+        # The answer to "Here's what I understood ... Reply yes": go ahead, or apply the change
+        # (the model re-reads the request with the correction and asks again).
+        if re.fullmatch(r"(yes|yep|yeah|y|ok|okay|sure|go|go ahead|send( it)?|confirm(ed)?|correct|"
+                        r"looks good|sounds good|perfect|👍)[.! ]*", low):
+            return "plan_confirmed", run.state["original"]
+        return "plan", "%s. %s" % (run.state["original"].rstrip(". "), text.strip())
     if who == "Me" and run is not None and run.state.get("needs_start") and not fresh:
         # The answer to "Where should we start from?": add it to the original request.
         place = re.sub(r"^(?:let'?s\s+)?(?:start(?:ing)?\s+)?(?:at|from|in)?\s*", "", text.strip(), flags=re.I).rstrip(".!")
@@ -153,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if action == "plan":
                     return self._json(200, {"action": "plan", "run": planner.start(arg or text).id})
+                if action == "plan_confirmed":
+                    return self._json(200, {"action": "plan", "run": planner.start(arg, confirmed=True).id})
                 if action == "vote":
                     planner.vote(run, who, arg)
                     return self._json(200, {"action": "vote"})

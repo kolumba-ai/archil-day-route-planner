@@ -15,7 +15,7 @@ from planner import planner, routes, search
 
 FULL = "Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
 SOLO = "Plan Saturday starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
-SHARED_FIELDS = {"id", "name", "kind", "walking", "food", "activities", "weather"}
+SHARED_FIELDS = {"id", "name", "kind", "walking", "food", "activities", "weather", "safety"}
 
 
 def run_planner(text, answer="allow", timeout=60):

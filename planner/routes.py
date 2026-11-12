@@ -12,6 +12,8 @@ import json
 import math
 import os
 
+from . import crime
+
 HERE = os.path.dirname(__file__)
 
 START = {"name": "Start (Noe Valley)", "lat": 37.7502, "lon": -122.4337}  # San Francisco demo
@@ -29,7 +31,15 @@ HILLS = [
     ("Lands End bluffs", 37.7850, -122.4990, 0.5, 40),
 ]
 
-DWELL = {"cafe": 30, "food": 45, "park": 45, "outdoor_alternative": 50, "beach": 60}
+DWELL = {"cafe": 30, "food": 45, "park": 45, "outdoor_alternative": 50, "beach": 60, "waterfront": 45}
+
+
+def sunset_stop(ctx):
+    """The stop type timed for sunset ("riverside at sunset"); a beach by default."""
+    req = (ctx or {}).get("request") or {}
+    if "sunset_stop" in req:
+        return req["sunset_stop"]
+    return "beach"
 HILLY_M = 200  # total climb that's too much for someone who avoids hills
 HILLY_AVOID_REQUEST_M = 60  # when the request itself says "avoid hills"
 
@@ -64,6 +74,9 @@ def combine(profiles, request, start=None, conditions=None):
         "avoid_foods": sorted({f for p in humans for f in p["food"]["avoids"]}),
         "museum_max_min": min(p["activities"]["museum_max_min"] for p in humans),
         "dog": bool(dogs),
+        # Street crime: the most cautious person decides; "low" (avoid crime) by default.
+        "crime_tolerance": min(((p.get("safety") or {}).get("crime_tolerance") or "low" for p in humans),
+                               key=lambda t: {"low": 0, "medium": 1, "high": 2}.get(t, 0), default="low"),
         "dog_owner": dogs[0]["owner"] if dogs else None,
     }
     return {"request": request, "people": humans, "pets": dogs, "limits": limits,
@@ -114,8 +127,10 @@ def climb_m(a, b, ctx=None):
 RIDE_OVERHEAD_MIN = 8  # waiting for transit or a car, and walking to and from it
 
 
-def leg(a, b, pace_kmh, streets=None, ctx=None):
-    """Walk if reasonable, otherwise ride (transit or rideshare).
+def leg(a, b, pace_kmh, streets=None, ctx=None, minute=None):
+    """Walk if reasonable and safe, otherwise ride: a bus when one route serves both ends,
+    else an Uber/Lyft/taxi. "Safe": the walk passes no street-crime hotspot at that hour,
+    for the group's crime tolerance (planner/crime.py).
 
     With a street matrix (streets.build_matrix) distances follow real streets and paths,
     and rides use real driving times; without one, straight-line distance x 1.3.
@@ -125,12 +140,29 @@ def leg(a, b, pace_kmh, streets=None, ctx=None):
     d = streets["walk_km"][ka][kb] if on_streets else km(a, b) * 1.3
     up, hills = climb_m(a, b, ctx)
     walk_min = d / pace_kmh * 60 + up / 10  # +1 min per 10 m climbed
+    unsafe = None
     if walk_min <= 35:
-        return {"mode": "walk", "km": round(d, 2), "min": round(walk_min), "climb_m": up, "hills": hills,
+        tolerance = ((ctx or {}).get("limits") or {}).get("crime_tolerance", "low")
+        spot = crime.hotspot((ctx or {}).get("crime"), a, b, minute if minute is not None else 12 * 60, tolerance)
+        walk = {"mode": "walk", "km": round(d, 2), "min": round(walk_min), "climb_m": up, "hills": hills,
                 "streets": on_streets}
+        if not spot:
+            return walk
+        if tolerance == "high":  # they don't mind: walk, but say so
+            walk["crime"] = spot
+            return walk
+        unsafe = spot  # too risky to walk at this hour: ride instead
+    bus = (((ctx or {}).get("bus") or {}).get("pairs") or {}).get(transit_key(a), {}).get(transit_key(b))
+    if bus:  # a real bus route stops near both ends (planner/transit.py)
+        return {"mode": "ride", "km": round(d, 2), "min": bus["min"], "climb_m": 0, "hills": [],
+                "walk_km": bus["walk_km"], "streets": on_streets, "bus": bus, "avoids": unsafe}
     ride_min = (streets["car_min"][ka][kb] + RIDE_OVERHEAD_MIN) if on_streets else 12 + d * 3
     return {"mode": "ride", "km": round(d, 2), "min": round(ride_min), "climb_m": 0, "hills": [],
-            "walk_km": 0.3, "streets": on_streets}
+            "walk_km": 0.3, "streets": on_streets, "rideshare": True, "avoids": unsafe}
+
+
+def transit_key(p):
+    return "%.5f,%.5f" % (p["lat"], p["lon"])
 
 
 def hhmm(m):
@@ -165,13 +197,18 @@ def simulate(stops, ctx):
     legs, timeline, violations, notes = [], [], [], []
     walk_km = climb = 0
     for cat, v in stops:
-        lg = leg(here, v, lim["pace_kmh"], ctx.get("streets"), ctx)
+        lg = leg(here, v, lim["pace_kmh"], ctx.get("streets"), ctx, t)
+        if lg.get("avoids"):
+            notes.append("%s to %s instead of walking: %s" % (
+                "Bus " + lg["bus"]["route"] if lg.get("bus") else "Uber/Lyft/taxi", v["name"], crime.describe(lg["avoids"])))
+        elif lg.get("crime"):
+            notes.append("Walk to %s passes %s" % (v["name"], crime.describe(lg["crime"])))
         legs.append(lg)
         t += lg["min"]
         walk_km += lg["km"] if lg["mode"] == "walk" else lg.get("walk_km", 0)
         climb += lg["climb_m"]
         arrive = t
-        if cat == "beach":  # aim to be there for sunset
+        if cat == sunset_stop(ctx):  # aim to be there for sunset
             if arrive < sunset - 60:
                 idle = sunset - 60 - arrive
                 t = arrive = sunset - 60
@@ -187,7 +224,7 @@ def simulate(stops, ctx):
         if lim["dog"]:
             if cat in ("cafe", "food") and v["dogs"] == "no":
                 violations.append("%s: no dogs, not even on a patio" % v["name"])
-            if cat in ("beach", "park") and v["dogs"] == "no":
+            if cat in ("beach", "park", "waterfront") and v["dogs"] == "no":
                 violations.append("%s: dogs not allowed" % v["name"])
             if cat == "museum" and v.get("kind") == "museum":
                 notes.append("Dogs can't go into %s; one person walks Biscuit outside" % v["name"])
@@ -203,7 +240,10 @@ def simulate(stops, ctx):
         here = v
     back = None
     if ctx.get("return_to_start"):  # "back at the place of departure": the walk home counts too
-        back = leg(here, start, lim["pace_kmh"], ctx.get("streets"), ctx)
+        back = leg(here, start, lim["pace_kmh"], ctx.get("streets"), ctx, t)
+        if back.get("avoids"):
+            notes.append("%s back to the start instead of walking: %s" % (
+                "Bus " + back["bus"]["route"] if back.get("bus") else "Uber/Lyft/taxi", crime.describe(back["avoids"])))
         t += back["min"]
         walk_km += back["km"] if back["mode"] == "walk" else back.get("walk_km", 0)
         climb += back["climb_m"]
@@ -217,7 +257,7 @@ def simulate(stops, ctx):
 
     last_cat, last = stops[-1]
     wx = weather_at(cond, to_min(timeline[-1]["arrive"]), last.get("area"))
-    if last_cat == "beach" and wx["fog"]:
+    if last_cat in ("beach", "waterfront") and wx["fog"]:
         notes.append("Fog expected at %s around %s" % (last["name"], timeline[-1]["arrive"]))
 
     it = {"depart": hhmm(start_min), "start": start["name"], "city": ctx.get("city") or "San Francisco", "start_lat": start["lat"], "start_lon": start["lon"],
@@ -282,9 +322,9 @@ def score_itinerary(it, stops, ctx, sunset):
                     parts.append(1.0 if v.get("food_truck") else 0.5)  # they asked for a food truck
             elif cat == "park":
                 parts.append(0.9 if "views" in p["activities"]["likes"] else 0.8)
-            elif cat == "beach":
+            elif cat in ("beach", "waterfront"):
                 wx = it["weather_at_end"]
-                s = 1.0
+                s = 1.0 if cat == "beach" else (0.95 if "views" in p["activities"]["likes"] else 0.85)
                 if wx["fog"]:
                     s -= 0.3
                 tol = {"low": 15, "medium": 25, "high": 40}[p["weather"]["wind_tolerance"]]
@@ -293,7 +333,7 @@ def score_itinerary(it, stops, ctx, sunset):
                 if p["weather"]["cold_tolerance"] == "low" and wx["temp_c"] < 14:
                     s -= 0.2
                 arrive = to_min(it["stops"][-1]["arrive"])
-                if not (sunset - 60 <= arrive <= sunset):
+                if cat == sunset_stop(ctx) and not (sunset - 60 <= arrive <= sunset):
                     s -= 0.2  # misses the sunset window
                 parts.append(clip(s))
         per[p["name"]] = round(clip(sum(parts) / len(parts) - crowd), 2)
@@ -351,7 +391,7 @@ def pick_diverse(plans, n=3, penalty=0.03):
     return chosen
 
 
-ANCHOR_ORDER = ["museum", "beach", "park", "food", "cafe"]
+ANCHOR_ORDER = ["museum", "beach", "waterfront", "park", "food", "cafe"]
 
 
 def anchors(categories):
@@ -365,11 +405,11 @@ def branch_specs(candidates, categories):
     return [dict(zip(an, idx)) for idx in itertools.product(*[range(len(candidates[c])) for c in an])]
 
 
-def orders(categories):
-    """Visiting orders worth trying: a beach goes last (sunset), coffee before food."""
+def orders(categories, last="beach"):
+    """Visiting orders worth trying: the sunset stop goes last, coffee before food."""
     out = []
     for perm in itertools.permutations(categories):
-        if "beach" in perm and perm[-1] != "beach":
+        if last in perm and perm[-1] != last:
             continue
         if "cafe" in perm and "food" in perm and perm.index("cafe") > perm.index("food"):
             continue
@@ -385,7 +425,7 @@ def route_branch(fixed, candidates, ctx, keep=4):
     results, dropped = [], {}
     for combo in itertools.product(*[candidates[c] for c in free]):
         pick = dict(fixed, **dict(zip(free, combo)))
-        for order in orders(cats):
+        for order in orders(cats, sunset_stop(ctx)):
             it = simulate([(c, pick[c]) for c in order], ctx)
             if it["violations"]:
                 for v in it["violations"]:

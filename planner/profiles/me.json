@@ -35,5 +35,8 @@
     "weight_kg": 78,
     "height_cm": 178,
     "backpack_kg": 3
+  },
+  "safety": {
+    "crime_tolerance": "low"
   }
 }

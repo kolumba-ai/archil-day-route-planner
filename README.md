@@ -33,6 +33,28 @@ The center of the demo has three screens that show this while it runs:
 | **Routes** | Each plan as a timetable: arrival and departure times, walking or riding between stops, distance, climb, and notes such as dog rules or fog |
 | **Technical** | A live timeline of the disk checkpoints, the search branches, the base sandbox and every route sandbox (fork, then run), with fork times, storage written compared with full copies, and the sandboxes kept as plans |
 
+## How a request flows
+
+1. **An LLM reads it.** Claude Haiku 5.5 (or OpenAI) reads what you type. There is no rule-based
+   guessing: if no LLM is connected, the agent says so and stops.
+2. **You confirm.** The agent shows what it understood (start, stops, which stop is at sunset,
+   limits, who's coming) and contacts nobody until you reply *yes*. Any other reply is a correction.
+3. **Weather.** Once accepted, one line with the forecast for the hours of the outing and sunset.
+4. **Ana's agent** is asked for her limits, including her tolerance for street crime.
+5. **Routes.** Walks too long to walk become a **bus ride** on a real route from OpenStreetMap
+   (one line that stops near both ends, in the right direction), else an Uber/Lyft/taxi.
+6. **Street crime.** Each walk is checked against the past year of police reports near that street
+   at that hour of the day. Tolerance is low by default (avoid crime) and the most cautious person
+   decides: a walk past a hotspot becomes a bus ride or an Uber/Lyft/taxi, and the plan says why.
+
+Crime data lives in `planner/crime_data/` (Portland, San Francisco, Seattle, Chicago), downloaded
+once from each city's police open data. The app only reads these files; refreshing them is a
+separate service's job:
+
+```bash
+python3 scripts/update_crime.py            # all cities; or e.g. "portland"
+```
+
 ## Run it
 
 Python 3.9+ on macOS. No packages to install for the local demo.

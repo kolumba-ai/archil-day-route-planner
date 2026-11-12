@@ -31,8 +31,10 @@ Rules:
 - "start_time" / "end_time": 24-hour "HH:MM". end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
 - "max_walk_km": the walking limit in kilometers (convert miles: x 1.609). 0 if none.
 - "day": the weekday, e.g. "Saturday". Empty string if none.
-- "stops": the kinds of places to visit, from: cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach. The starting place is not a stop. In the order mentioned.
+- "stops": the kinds of places to visit, from: cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
+- "sunset_stop": the stop the message wants at sunset ("riverside at sunset" -> "waterfront", "beach at sunset" -> "beach"). Must be one of "stops". Empty string if the message doesn't tie a stop to sunset. The starting place is not a stop. In the order mentioned.
 - "avoid_hills" / "prefer_hills": true only if the message says so ("avoid hills", "flat" / "I want hills", "a good climb").
+- Later text corrects earlier text: if the message ends with a correction ("make it riverside, not a park"), apply it.
 - "with_ana": true if Ana is coming. "dog": true if a dog (Biscuit) is coming.
 - "cuisines": cuisines asked for, lowercase English adjectives (e.g. "korean", "japanese", "mexican", "thai", "vegan"). Empty if none.
 - "food_truck": true if they ask for a food truck, food cart or street food.
@@ -47,7 +49,8 @@ SCHEMA = {
         "end_time": {"type": "string"},
         "max_walk_km": {"type": "number"},
         "day": {"type": "string"},
-        "stops": {"type": "array", "items": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach"]}},
+        "stops": {"type": "array", "items": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront"]}},
+        "sunset_stop": {"type": "string", "enum": ["", "cafe", "park", "museum", "food", "beach", "waterfront"]},
         "avoid_hills": {"type": "boolean"},
         "prefer_hills": {"type": "boolean"},
         "with_ana": {"type": "boolean"},
@@ -57,7 +60,7 @@ SCHEMA = {
         "return_to_start": {"type": "boolean"},
     },
     "required": ["city", "start_place", "start_time", "end_time", "max_walk_km", "day", "stops",
-                 "avoid_hills", "prefer_hills", "with_ana", "dog", "cuisines", "food_truck", "return_to_start"],
+                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "cuisines", "food_truck", "return_to_start"],
     "additionalProperties": False,
 }
 
@@ -94,6 +97,27 @@ def model_name(who):
 
 def available():
     return provider() != "rules"
+
+
+class NoLLM(RuntimeError):
+    """No language model is connected: the request is not read at all."""
+
+
+class LLMFailed(RuntimeError):
+    """The language model was connected but couldn't read the request."""
+
+
+def rules_mode():
+    """Rule-based reading only when explicitly asked for (the tests, for repeatable runs)."""
+    return os.environ.get("PLANNER_PARSER", "").strip().lower() == "rules"
+
+
+def blank(text):
+    """What a request means before the model fills anything in."""
+    return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
+            "end_min": None, "cuisines": [], "food_truck": False, "return_to_start": False, "max_walk_km": None,
+            "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
+            "sunset_stop": None, "with": [], "dog": False}
 
 
 def ask_openai(system, text, schema, name="fields", timeout=20):
@@ -180,9 +204,14 @@ def merge(text, ai, base, who="claude"):
     day = (ai.get("day") or "").strip().capitalize()
     if day.lower() in rules.DAYS:
         take("day", day)
-    stops = [s for s in ai.get("stops") or [] if s in ("cafe", "park", "museum", "food", "beach")]
+    stops = [s for s in ai.get("stops") or [] if s in ("cafe", "park", "museum", "food", "beach", "waterfront")]
     if stops:
         take("categories", list(dict.fromkeys(stops)))
+        sun = ai.get("sunset_stop") or ""
+        if sun in out["categories"]:
+            take("sunset_stop", sun)
+        elif out.get("sunset_stop") not in out["categories"]:
+            take("sunset_stop", "beach" if "beach" in out["categories"] else None)
     if ai.get("avoid_hills") or ai.get("prefer_hills"):
         take("avoid_hills", bool(ai.get("avoid_hills")) and not ai.get("prefer_hills"))
         take("prefer_hills", bool(ai.get("prefer_hills")) and not ai.get("avoid_hills"))
@@ -203,18 +232,25 @@ def merge(text, ai, base, who="claude"):
 
 
 def understand(text):
-    """The request as a dict (same fields as request.parse), read by OpenAI or Claude when available."""
-    base = rules.parse(text)
+    """The request as a dict (same fields as request.parse), read by Claude (or OpenAI).
+
+    No rule-based guessing in the product: with no model connected this raises NoLLM, and if
+    the model fails it raises LLMFailed, so the agent says so and plans nothing. A field the
+    model gets wrong (a place not in the message, an impossible time) is left empty, never
+    filled by guesswork; a missing start then means asking. PLANNER_PARSER=rules (tests only)
+    uses the rule-based reader for repeatable runs."""
+    if rules_mode():
+        return dict(rules.parse(text), parsed_by="rules", claude_fields=[], model_fields=[])
     who = provider()
     if who == "rules":
-        return dict(base, parsed_by="rules", claude_fields=[], model_fields=[])
+        raise NoLLM("no language model is connected")
     try:
-        out = merge(text, ask_model(who, SYSTEM, text, SCHEMA, "day_plan_request"), base, who)
-        out["parser_model"] = model_name(who)
-        return out
-    except Exception as e:  # network, refusal, bad JSON: the rules answer
-        print("%s parsing failed, using the rules: %r" % (LABEL[who], e))
-        return dict(base, parsed_by="rules", claude_fields=[], model_fields=[], parse_error=str(e)[:120])
+        ai = ask_model(who, SYSTEM, text, SCHEMA, "day_plan_request")
+    except Exception as e:
+        raise LLMFailed("%s couldn't read the request: %s" % (LABEL[who], str(e)[:100]))
+    out = merge(text, ai, blank(text), who)
+    out["parser_model"] = model_name(who)
+    return out
 
 
 REPLY_SYSTEM = """Someone is replying in a group chat about a day plan. Read their reply.

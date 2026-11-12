@@ -420,19 +420,23 @@ class ClaudeParsingTests(unittest.TestCase):
         self.assertIsNone(understand.merge(sf, dict(good, city="San Francisco", start_place="Noe Valley"),
                                            request.parse(sf))["city"])
 
-    def test_U2_no_key_means_rules(self):
+    def test_U2_no_llm_means_stop(self):
+        """No model connected: nothing is guessed, the agent says so and contacts nobody."""
+        from unittest import mock
         from planner import understand
-        old = os.environ.get("PLANNER_PARSER")
-        os.environ["PLANNER_PARSER"] = "rules"
-        try:
-            r = understand.understand(self.TEXT)
-        finally:
-            if old is None:
-                os.environ.pop("PLANNER_PARSER", None)
-            else:
-                os.environ["PLANNER_PARSER"] = old
-        self.assertEqual(r["parsed_by"], "rules")
-        self.assertEqual(r["start_place"], "St Stephens Catholic Church")
+        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PLANNER_PARSER")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(understand.NoLLM):
+                understand.understand(self.TEXT)
+            run = planner.Run()
+            planner.plan(run, self.TEXT, confirmed=True)
+        types = [e["type"] for e in run.events]
+        self.assertIn("no_llm", types)
+        self.assertNotIn("share_request", types)
+        self.assertIn("No LLM is connected", [e["text"] for e in run.events if e["type"] == "message"][-1])
+        # The rule-based reader exists only for tests, and only when asked for.
+        with mock.patch.dict(os.environ, {"PLANNER_PARSER": "rules"}):
+            self.assertEqual(understand.understand(self.TEXT)["parsed_by"], "rules")
 
 
 class VenueFactsTests(unittest.TestCase):
@@ -586,6 +590,107 @@ class StartPointTests(unittest.TestCase):
         # A brand-new request replaces the pending one instead of being glued onto it.
         action, text = server.interpret(run, "Me", "Plan Sunday in Seattle starting at Pike Place Market, coffee")
         self.assertEqual(request.parse(text)["city"], "Seattle")
+
+
+RIVERSIDE = ("Plan Saturday with Ana and Biscuit starting from St Stephen's Catholic Church in Portland Oregon: "
+             "coffee, a museum, burritos, riverside at sunset")
+
+
+class ConfirmFirstTests(unittest.TestCase):
+    """N: the agent shows what it understood and waits for "yes" before contacting Ana."""
+
+    def test_N1_riverside_at_sunset(self):
+        r = request.parse(RIVERSIDE)
+        self.assertEqual(r["categories"], ["cafe", "museum", "food", "waterfront"])
+        self.assertEqual(r["sunset_stop"], "waterfront")
+        self.assertEqual(request.parse("coffee, a museum, burritos, beach at sunset")["sunset_stop"], "beach")
+        self.assertEqual(routes.orders(["waterfront", "cafe"], "waterfront"), [("cafe", "waterfront")])
+
+    def test_N2_nothing_sent_before_yes(self):
+        import server
+        from unittest import mock
+        start = {"name": "St Stephen's Catholic Church", "lat": 45.5145, "lon": -122.6197}
+        weather = {"sunset": "16:40", "date": "2026-11-14",
+                   "hourly": {str(h): {"all": {"temp_c": 11 + (h > 12), "wind_kmh": 14, "fog": False}} for h in range(8, 20)}}
+        run = planner.Run()
+        with mock.patch.object(planner, "resolve_start", return_value=(start, weather, None)):
+            planner.plan(run, RIVERSIDE, confirmed=False)
+        types = [e["type"] for e in run.events]
+        self.assertIn("confirm", types)
+        self.assertNotIn("share_request", types)  # Ana hears nothing yet
+        said = [e["text"] for e in run.events if e["type"] == "message"][-1]
+        for bit in ("Here's what I understood", "riverside", "at sunset", "Ana", "Biscuit", "Reply yes"):
+            self.assertIn(bit, said)
+        self.assertEqual(server.interpret(run, "Me", "yes"), ("plan_confirmed", RIVERSIDE))
+        action, text = server.interpret(run, "Me", "make it a beach instead")
+        self.assertEqual(action, "plan")
+        self.assertTrue(text.startswith(RIVERSIDE.rstrip(".")) and text.endswith("make it a beach instead"))
+        brief = planner.weather_brief(weather, request.parse(RIVERSIDE), "Portland Oregon")
+        self.assertEqual(brief, "🌤️ Weather for Saturday in Portland Oregon: 11–12°C, wind up to 14 km/h, no fog. "
+                                "🌅 Sunset 16:40.")
+
+
+class StreetCrimeTests(unittest.TestCase):
+    """C: walks past a street-crime hotspot at that hour become a bus or an Uber/Lyft/taxi."""
+
+    A = {"name": "A", "lat": 45.5290, "lon": -122.6765}
+    B = {"name": "B", "lat": 45.5250, "lon": -122.6770}
+
+    def index(self, hour, n):
+        from planner import crime
+        incidents = [(45.5270, -122.6767, hour, "Robbery", "700 BLOCK OF SW 6TH AVE")] * n
+        incidents += [(45.50 + i * 0.002, -122.60, h, "Assault", "") for i in range(60) for h in (2, 15)]
+        return crime.pair_cells(crime.build_index(incidents), [self.A, self.B])
+
+    def ctx(self, tolerance, bus=True):
+        opt = {"route": "FX2", "route_name": "", "board": "Union Station", "alight": "SW 6th & Pine", "stops": 3,
+               "board_at": [0, 0], "alight_at": [0, 0], "ride_km": 0.5, "walk_km": 0.1, "min": 12}
+        return {"crime": self.index(15, 9), "limits": {"crime_tolerance": tolerance},
+                "bus": {"pairs": {routes.transit_key(self.A): {routes.transit_key(self.B): opt}} if bus else {}}}
+
+    def test_C1_low_tolerance_takes_the_bus(self):
+        lg = routes.leg(self.A, self.B, 4.5, None, self.ctx("low"), 15 * 60)
+        self.assertEqual((lg["mode"], lg["bus"]["route"]), ("ride", "FX2"))
+        self.assertIn("700 Block of Sw 6Th Ave", lg["avoids"]["street"])
+
+    def test_C2_no_bus_means_a_taxi(self):
+        lg = routes.leg(self.A, self.B, 4.5, None, self.ctx("low", bus=False), 15 * 60)
+        self.assertTrue(lg.get("rideshare"))
+        self.assertTrue(lg["avoids"])
+
+    def test_C3_the_hour_matters_and_high_tolerance_walks(self):
+        self.assertEqual(routes.leg(self.A, self.B, 4.5, None, self.ctx("low"), 9 * 60)["mode"], "walk")
+        lg = routes.leg(self.A, self.B, 4.5, None, self.ctx("high"), 15 * 60)
+        self.assertEqual(lg["mode"], "walk")
+        self.assertTrue(lg["crime"])
+
+    def test_C4_most_cautious_person_decides(self):
+        me = profiles("me")
+        ana = copy.deepcopy(me[0])
+        me[0]["safety"] = {"crime_tolerance": "high"}
+        ana.update(id="ana", name="Ana", safety={"crime_tolerance": "low"})
+        self.assertEqual(routes.combine(me + [ana], request.parse("coffee"))["limits"]["crime_tolerance"], "low")
+        del me[0]["safety"]
+        self.assertEqual(routes.combine(me, request.parse("coffee"))["limits"]["crime_tolerance"], "low")
+
+    def test_C5_city_files_exist(self):
+        from planner import crime
+        for city in ("Portland Oregon", "San Francisco", "Seattle", "Chicago"):
+            idx = crime.load(city)
+            self.assertTrue(idx and idx["incidents"] > 1000, city)
+        self.assertIsNone(crime.load("Boise"))
+
+
+class BusTests(unittest.TestCase):
+    """B: a bus ride needs one route stopping near both ends, in the right direction."""
+
+    def test_B1_direction_matters(self):
+        from planner import transit
+        stops = {i: {"lat": 45.50 + i * 0.01, "lon": -122.60, "name": "Stop %d" % i} for i in range(5)}
+        net = {"stops": stops, "routes": [{"ref": "14", "name": "Bus 14", "stops": [0, 1, 2, 3, 4]}]}
+        a, b = {"lat": 45.5001, "lon": -122.6001}, {"lat": 45.5399, "lon": -122.6001}
+        self.assertEqual(transit.best_bus(net, a, b)["route"], "14")
+        self.assertIsNone(transit.best_bus(net, b, a))  # this route only runs the other way
 
 
 if __name__ == "__main__":

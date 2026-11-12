@@ -33,9 +33,15 @@ OSM_TAGS = {
     "food": ['nwr["amenity"="restaurant"]["name"]', 'nwr["amenity"="fast_food"]["name"]',
              'nwr["amenity"="food_court"]["name"]', 'nwr["street_vendor"="yes"]["name"]'],
     "beach": ['nwr["natural"="beach"]["name"]'],
+    # Waterfront: piers and promenades, plus parks and beaches whose name says water (see WATER_NAME).
+    "waterfront": ['nwr["man_made"="pier"]["name"]', 'nwr["leisure"="promenade"]["name"]',
+                   'nwr["highway"="pedestrian"]["name"~"Esplanade|Waterfront|Riverfront|Riverwalk|Promenade|Embarcadero"]'],
 }
 DEFAULT_HOURS = {"cafe": ("07:00", "18:00"), "park": ("05:00", "22:00"), "museum": ("10:00", "17:00"),
-                 "food": ("11:00", "21:00"), "beach": ("00:00", "23:59")}
+                 "food": ("11:00", "21:00"), "beach": ("00:00", "23:59"), "waterfront": ("05:00", "23:59")}
+WATER_NAME = re.compile(r"(?i)\b(water ?front|river ?front|river ?side|river ?walk|river|esplanade|lake ?front|"
+                        r"lake ?side|lake|harbou?r|marina|pier|promenade|boardwalk|bay ?front|shore|embarcadero|"
+                        r"beach|crissy field)\b")
 
 
 # ---------------------------------------------------------------- http + cache
@@ -256,7 +262,17 @@ def _all_elements(center, radius_m):
         parts = "".join("%s(around:%d,%.5f,%.5f);" % (t, radius_m, center["lat"], center["lon"])
                         for tags in OSM_TAGS.values() for t in tags)
         return _overpass("[out:json][timeout:60];(%s);out center tags 1500;" % parts)
-    return _cached("osm-all:%.4f,%.4f:%d" % (center["lat"], center["lon"], radius_m), fetch, ttl=7 * 24 * 3600)
+    return _cached("osm-all2:%.4f,%.4f:%d" % (center["lat"], center["lon"], radius_m), fetch, ttl=7 * 24 * 3600)
+
+
+def _categories_of(tags):
+    """Every stop type a place can serve as: a riverside park is both a park and a waterfront."""
+    cats = {_category_of(tags)} - {None}
+    if (tags.get("man_made") == "pier" or tags.get("leisure") == "promenade" or tags.get("natural") == "beach"
+            or tags.get("highway") == "pedestrian"
+            or (tags.get("leisure") in ("park", "garden") and WATER_NAME.search(tags.get("name", "")))):
+        cats.add("waterfront")
+    return cats
 
 
 def _category_of(tags):
@@ -274,11 +290,14 @@ def _category_of(tags):
 
 
 NOMINATIM_WORDS = {"cafe": ["cafe", "coffee"], "park": ["park", "garden"], "museum": ["museum", "gallery"],
-                   "food": ["restaurant", "fast food"], "beach": ["beach"]}
+                   "food": ["restaurant", "fast food"], "beach": ["beach"],
+                   "waterfront": ["waterfront park", "riverfront", "esplanade", "pier"]}
 NOMINATIM_KINDS = {"cafe": {("amenity", "cafe")}, "park": {("leisure", "park"), ("leisure", "garden")},
                    "museum": {("tourism", "museum"), ("tourism", "gallery")},
                    "food": {("amenity", "restaurant"), ("amenity", "fast_food"), ("amenity", "food_court")},
-                   "beach": {("natural", "beach")}}
+                   "beach": {("natural", "beach")},
+                   "waterfront": {("leisure", "park"), ("man_made", "pier"), ("natural", "beach"),
+                                  ("leisure", "promenade"), ("highway", "pedestrian")}}
 
 # Words that, in a name, show a cuisine even when the cuisine tag is missing.
 CUISINE_NAME_WORDS = {"korean": ["korean", "kimchi", "bibimbap", "bulgogi", "seoul"],
@@ -325,6 +344,8 @@ def _nominatim_elements(category, center, radius_m, words=None):
         for r in _cached("nom:%s:%s" % (word, box), fetch, ttl=7 * 24 * 3600) or []:
             if (r.get("category"), r.get("type")) not in NOMINATIM_KINDS[category] or not r.get("name"):
                 continue
+            if category == "waterfront" and r.get("category") == "leisure" and not WATER_NAME.search(r["name"]):
+                continue  # a park counts as waterfront only when its name says so
             tags = dict(r.get("extratags") or {}, name=r["name"])
             out.append({"type": r.get("osm_type", "node"), "id": r.get("osm_id"), "lat": float(r["lat"]),
                         "lon": float(r["lon"]), "tags": tags})
@@ -351,7 +372,7 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
     if _ch_key():  # one fast Overpass query with full tags (cuisine included) for every stop type
         try:
             with _venues_lock:  # the search branches run in parallel; fetch the shared query once
-                elements = [e for e in _all_elements(center, radius_m) if _category_of(e.get("tags", {})) == category]
+                elements = [e for e in _all_elements(center, radius_m) if category in _categories_of(e.get("tags", {}))]
         except Exception:
             elements = []
     if not elements:
@@ -359,7 +380,7 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
                     if km(e, center) * 1000 <= radius_m * 1.05]
     if not elements and not _ch_key():
         with _venues_lock:
-            elements = [e for e in _all_elements(center, radius_m) if _category_of(e.get("tags", {})) == category]
+            elements = [e for e in _all_elements(center, radius_m) if category in _categories_of(e.get("tags", {}))]
     if category == "food" and cuisines:
         elements = [e for e in elements if matches_cuisine(e.get("tags", {}), cuisines)]
     venues, seen = [], set()
@@ -377,7 +398,7 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
         open_, close = hours or DEFAULT_HOURS[category]
         dog = tags.get("dog")
         dogs = {"yes": "patio" if category in ("cafe", "food") else "leash", "leashed": "leash",
-                "no": "no", "unleashed": "offleash"}.get(dog, "leash" if category in ("park", "beach") else "patio")
+                "no": "no", "unleashed": "offleash"}.get(dog, "leash" if category in ("park", "beach", "waterfront") else "patio")
         v = {"name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "open": open_, "close": close,
              "hours_known": hours is not None, "dogs": dogs, "dogs_known": dog is not None,
              "vegetarian_ok": tags.get("diet:vegetarian", "yes") != "no",
@@ -386,7 +407,7 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
              "source": "https://www.openstreetmap.org/%s/%s" % (e["type"], e["id"])}
         if category == "museum":
             v["kind"] = "museum"
-        if category == "beach":
+        if category in ("beach", "waterfront"):
             v["area"] = "all"
         venues.append(v)
     # Nearest first; when food trucks were asked for, trucks and carts come before restaurants.

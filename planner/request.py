@@ -8,15 +8,26 @@ import re
 
 SF = "San Francisco"
 
+WATERFRONT = (r"\b(river ?side|river ?front|river ?walk|by the river|along the river|water ?front|esplanade|"
+              r"lake ?front|lake ?side|harbou?r ?front|harbou?r|marina|pier|promenade|boardwalk|bay ?front|sea ?front|"
+              r"embarcadero)\b")
+
 # Stop types, the words that ask for them, and their order when nothing else decides it.
 CATEGORIES = [
     ("cafe", r"\b(coffee|caf[eé]s?|espresso)\b"),
     ("park", r"\b(parks?|gardens?|green space)\b"),
     ("museum", r"\b(museums?|galler(y|ies)|exhibits?)\b"),
     ("food", r"\b(burritos?|lunch|dinner|food|tacos?|restaurants?|brunch|eat)\b"),
-    ("beach", r"\b(beach(es)?|ocean|sunset)\b"),
+    ("beach", r"\b(beach(es)?|ocean)\b"),
+    ("waterfront", WATERFRONT),
 ]
+# "riverside at sunset": the stop just before "sunset" is timed for it. A beach is a sunset
+# stop when nothing else is; "sunset" alone (no outdoor stop) still means a beach.
+SUNSET = r"\b(?:at|for|by|around|watch(?:ing)?(?: the)?|see(?: the)?|catch(?: the)?)?\s*(?:the\s+)?sunset\b"
 DEFAULT_CATEGORIES = ["cafe", "museum", "food", "beach"]  # the San Francisco demo's day
+OUTDOOR = ("beach", "waterfront", "park")  # stops that can be timed for sunset
+LABELS = {"cafe": "coffee", "park": "a park", "museum": "a museum", "food": "food", "beach": "a beach",
+          "waterfront": "the riverside / waterfront"}
 
 # Cuisines people ask for, mapped to OpenStreetMap's cuisine values.
 CUISINES = {
@@ -110,7 +121,21 @@ def parse(text):
         m = re.search(rx, stops_text)
         if m:
             found.append((m.start(), cat))
+    sunset_stop = None
+    m_sun = re.search(SUNSET, stops_text)
+    if m_sun:
+        before = [(pos, c) for pos, c in found if pos < m_sun.start() and c in OUTDOOR]
+        after = [(pos, c) for pos, c in found if c in OUTDOOR]
+        if before:
+            sunset_stop = max(before)[1]  # "riverside at sunset"
+        elif after:
+            sunset_stop = after[0][1]
+        else:  # "... and sunset": the classic beach at sunset
+            found.append((m_sun.start(), "beach"))
+            sunset_stop = "beach"
     categories = [c for _, c in sorted(found)] or list(DEFAULT_CATEGORIES)
+    if sunset_stop is None and "beach" in categories:
+        sunset_stop = "beach"
 
     day = next((d.capitalize() for d in DAYS if d in low), "Saturday")
     return {
@@ -127,6 +152,7 @@ def parse(text):
         "avoid_hills": bool(re.search(AVOID_HILLS, low)),
         "prefer_hills": bool(re.search(PREFER_HILLS, low)) and not re.search(AVOID_HILLS, low),
         "categories": categories,
+        "sunset_stop": sunset_stop,  # the stop timed for sunset, or None
         "with": ["ana"] if re.search(r"\bana\b", low) else [],
         "dog": bool(re.search(r"\b(dog|biscuit)\b", low)),
     }

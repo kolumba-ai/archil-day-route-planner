@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from . import decide, fitness, places, present, routes, search, streets
+from . import crime, decide, fitness, places, present, routes, search, streets
 from . import request as request_mod
 from .disk import OutingDisk
 
@@ -21,10 +21,11 @@ CATEGORY_WORDS = [
     ("museum", ("museum", "gallery")),
     ("food", ("burrito", "lunch", "dinner", "food", "taco", "restaurant")),
     ("beach", ("beach", "sunset", "ocean")),
+    ("waterfront", ("riverside", "river", "waterfront", "esplanade", "pier", "lakefront")),
 ]
 
 
-PROFILE_FIELDS = ("walking", "food", "activities", "weather")
+PROFILE_FIELDS = ("walking", "food", "activities", "weather", "safety")
 
 
 def load_profile(pid):
@@ -66,6 +67,7 @@ def default_friend(pid, name):
         "food": {"diet": "vegetarian", "loves": [], "avoids": []},
         "activities": {"museum_max_min": 60, "likes": [], "dislikes": ["crowds"]},
         "weather": {"cold_tolerance": "low", "wind_tolerance": "low"},
+        "safety": {"crime_tolerance": "low"},
     }
 
 
@@ -102,16 +104,16 @@ class Run:
 RUNS = {}
 
 
-def start(text):
+def start(text, confirmed=False):
     run = Run()
     RUNS[run.id] = run
-    threading.Thread(target=_safe_plan, args=(run, text), daemon=True).start()
+    threading.Thread(target=_safe_plan, args=(run, text, confirmed), daemon=True).start()
     return run
 
 
-def _safe_plan(run, text):
+def _safe_plan(run, text, confirmed=True):
     try:
-        plan(run, text)
+        plan(run, text, confirmed)
     except Exception as e:  # surface failures in the UI instead of hanging
         import traceback
         traceback.print_exc()
@@ -158,8 +160,76 @@ def resolve_start(req):
     return start, None, None
 
 
-def plan(run, text):
-    req = parse_request(text)
+ICONS = {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️", "park": "🌳", "waterfront": "🌊"}
+
+
+def understood(req, start, city):
+    """What the agent understood, for the person to confirm before anyone else is contacted."""
+    stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), request_mod.LABELS.get(c, c),
+                                     " at sunset 🌅" if c == req.get("sunset_stop") else "")
+                       for c in req["categories"])
+    food = []
+    if req.get("cuisines"):
+        food.append(" or ".join(c.capitalize() for c in req["cuisines"]) + " food")
+    if req.get("food_truck"):
+        food.append("from a food truck")
+    lines = ["Here's what I understood:",
+             "📅 %s, %s" % (req["day"], city),
+             "📍 Start: %s at %s" % (start["name"], routes.hhmm(req["start_min"])),
+             "🗺️ " + stops]
+    if food:
+        lines.append("🍽️ " + " ".join(food))
+    limits = []
+    if req.get("end_min"):
+        limits.append(("back at the start by %s" if req.get("return_to_start") else "done by %s")
+                      % routes.hhmm(req["end_min"]))
+    limits.append("walking up to %g km" % req["max_walk_km"] if req["max_walk_km"] else "your usual walking limit")
+    if req.get("avoid_hills"):
+        limits.append("avoiding hills")
+    if req.get("prefer_hills"):
+        limits.append("with some hills")
+    lines.append("🚶 " + ", ".join(limits))
+    who = (["Ana"] if "ana" in req["with"] else []) + (["Biscuit 🐕"] if req["dog"] else [])
+    lines.append("👥 With " + " and ".join(who) if who else "👤 Just you")
+    lines.append("Reply yes to %s, or tell me what to change." % (
+        "send the invitation to Ana" if "ana" in req["with"] else "start planning"))
+    return "\n".join(lines)
+
+
+def weather_brief(conditions, req, city):
+    """One short line from the forecast for the hours of the outing."""
+    hourly = (conditions or {}).get("hourly") or {}
+    first = req["start_min"] // 60
+    last = (req["end_min"] // 60) if req.get("end_min") else max(first + 6, int(conditions["sunset"][:2]))
+    # Real cities have one forecast ("all"); the San Francisco demo has one per area (west, north...).
+    pick = lambda hs: [w for h in hs for w in (hourly[h].values())]
+    hours = pick([h for h in sorted(hourly, key=int) if first <= int(h) <= last]) or pick(list(hourly))
+    if not hours:
+        return None
+    lo, hi = min(h["temp_c"] for h in hours), max(h["temp_c"] for h in hours)
+    wind = max(h["wind_kmh"] for h in hours)
+    fog = any(h.get("fog") for h in hours)
+    sky = "🌫️" if fog else "💨" if wind >= 30 else "🌤️"
+    temps = "%d°C" % round(hi) if round(lo) == round(hi) else "%d–%d°C" % (round(lo), round(hi))
+    return "%s Weather for %s in %s: %s, wind up to %d km/h%s. 🌅 Sunset %s." % (
+        sky, req["day"], city, temps, round(wind), ", fog likely" if fog else ", no fog", conditions["sunset"])
+
+
+def plan(run, text, confirmed=True):
+    from .understand import NoLLM, LLMFailed
+    try:
+        req = parse_request(text)
+    except NoLLM:
+        run.emit("no_llm")
+        run.say("me", "⚠️ No LLM is connected, so I can't read your request and won't guess. Add "
+                      "ANTHROPIC_API_KEY (or OPENAI_API_KEY) to .env and restart the server.", agent=True)
+        run.emit("done", ok=False, reason="no_llm")
+        return
+    except LLMFailed as e:
+        run.say("me", "⚠️ I couldn't read your request: the LLM didn't answer (%s). Nothing was sent to "
+                      "anyone. Please try again." % str(e)[:90], agent=True)
+        run.emit("done", ok=False, reason="llm_failed")
+        return
     root = os.path.join(DATA, "outing-" + run.id)
     shutil.rmtree(root, ignore_errors=True)
     disk = OutingDisk(root, run.emit)
@@ -188,13 +258,16 @@ def plan(run, text):
     # The map moves to the start now, before any route is planned.
     run.emit("place", city=city, start=start["name"], lat=start["lat"], lon=start["lon"],
              sunset=(conditions or routes.load_conditions())["sunset"], date=(conditions or {}).get("date"))
-    run.say("me", "Starting from %s in %s at %s%s; walking up to %s km%s. Stops: %s. Checking %s's weather%s" % (
-        start["name"], city, routes.hhmm(req["start_min"]),
-        (", finishing by %s" % routes.hhmm(req["end_min"])) if req.get("end_min") else "",
-        ("%g" % req["max_walk_km"]) if req["max_walk_km"] else "your usual",
-        ", avoiding hills" if req["avoid_hills"] else ", with some hills" if req.get("prefer_hills") else "",
-        ", ".join(req["categories"]), req["day"],
-        " and asking Ana's agent for her limits." if req["with"] else "."), agent=True)
+    if not confirmed:
+        # Nothing goes to Ana (or anyone) until the person confirms what the agent understood.
+        run.state.update(needs_confirm=True, original=text)
+        run.emit("confirm", request={k: v for k, v in req.items() if k != "text"})
+        run.say("me", understood(req, start, city), agent=True)
+        run.emit("done", ok=False, reason="confirm")
+        return
+    brief = weather_brief(conditions or routes.load_conditions(), req, city)
+    run.say("me", "👍 On it%s.%s" % (", inviting Ana" if req["with"] else "", ("\n" + brief) if brief else ""),
+            agent=True)
 
     # --- Phase 1: gather shards (Ana's comes from her agent, with consent)
     shards = [load_profile("me")]
@@ -202,7 +275,7 @@ def plan(run, text):
         shards.append(load_profile("biscuit"))
     if "ana" in req["with"]:
         run.emit("share_request", frm="Me", to="Ana",
-                 asks=["walking limits", "hills", "diet", "museum tolerance", "weather tolerance"])
+                 asks=["walking limits", "hills", "diet", "museum tolerance", "weather tolerance", "street crime tolerance"])
         run.say("ana", "Your friend is inviting you to several activities on Saturday, "
                        "taking into account your limits. Accept?", agent=True, ask=True)
         run.share_event.wait(timeout=SHARE_TIMEOUT)
@@ -219,7 +292,8 @@ def plan(run, text):
             else:
                 ana = load_profile("ana")
                 run.say("ana", "Accepted, and sent over your limits.", agent=True)
-            summary = {k: ana[k] for k in ("id", "name", "kind", "walking", "food", "activities", "weather")}
+            summary = {k: ana.get(k, {"crime_tolerance": "low"} if k == "safety" else None)
+                       for k in ("id", "name", "kind", "walking", "food", "activities", "weather", "safety")}
             shards.append(summary)
             run.emit("shard", owner="Ana", fields=sorted(summary.keys()))
 
@@ -321,6 +395,31 @@ def route_and_finish(run, req, disk, ctx, candidates, prefetch=None):
             run.emit("streets", ok=False, error=str(e)[:120])
             run.say("me", "Street routing is unavailable (%s); estimating distances in straight lines." % str(e)[:80],
                     agent=True)
+    # Bus routes: legs too long to walk become a bus ride when one route serves both ends.
+    ctx.pop("bus", None)
+    if streets.enabled() and os.environ.get("PLANNER_TRANSIT", "on") != "off":
+        from . import transit
+        t = time.time()
+        points = [ctx["start"]] + [v for vs in candidates.values() for v in vs]
+        reach = max(routes.km(ctx["start"], p) for p in points) * 1000 + transit.STOP_RADIUS_M
+        try:
+            ctx["bus"] = transit.bus_matrix(points, ctx["start"], min(reach, 12000), ctx["limits"]["pace_kmh"])
+            disk.write_json(work, "bus.json", ctx["bus"], compact=True)
+            run.emit("bus", ok=True, routes=ctx["bus"]["routes"], pairs=sum(len(v) for v in ctx["bus"]["pairs"].values()),
+                     ms=round((time.time() - t) * 1000))
+        except Exception as e:
+            run.emit("bus", ok=False, error=str(e)[:120])
+    # Street crime along every possible walk, from the city's police data file (planner/crime.py).
+    ctx.pop("crime", None)
+    idx = crime.load(ctx.get("city"))
+    points = [ctx["start"]] + [v for vs in candidates.values() for v in vs]
+    if idx:
+        ctx["crime"] = crime.pair_cells(idx, points)
+        disk.write_json(work, "crime.json", ctx["crime"], compact=True)
+        run.emit("crime", ok=True, source=idx.get("source"), covers=idx.get("covers"),
+                 tolerance=ctx["limits"]["crime_tolerance"], cells=len(ctx["crime"]["cells"]))
+    else:
+        run.emit("crime", ok=False, error="no crime data for %s" % (ctx.get("city") or "San Francisco"))
     specs = routes.branch_specs(candidates, ctx["categories"])  # one branch per anchor combination
     chosen = None
     if os.environ.get("PLANNER_ROUTES") == "sandboxes":
