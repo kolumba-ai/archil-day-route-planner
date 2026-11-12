@@ -336,17 +336,23 @@ class FitnessTests(unittest.TestCase):
 
     def test_K2_calories_use_weight_and_backpack(self):
         body = {"weight_kg": 78, "height_cm": 178}
-        # ACSM: (0.1 x 2000 m + 3.5 x 25 min) ml/kg x 78 kg / 1000 x 5 kcal/L = 112 kcal
-        self.assertEqual(fitness.estimate(flat_plan(), body)["kcal"], 112)
+        # Pandolf, 2 km in 25 min (V = 1.333 m/s), flat, no pack:
+        # M = 1.5 x 78 + 78 x 1.5 x 1.333^2 = 325 W; x 1500 s / 4184 = 117 kcal
+        self.assertEqual(fitness.estimate(flat_plan(), body)["kcal"], 117)
+        # With 10 kg: + 2 x 88 x (10/78)^2 = 2.9 W, and the walking term on 88 kg = 354.6 W -> 127 kcal
         loaded = fitness.estimate(flat_plan(), dict(body, backpack_kg=10))
         self.assertEqual(loaded["load_kg"], 88)
-        self.assertGreater(loaded["kcal"], 112)
+        self.assertEqual(loaded["kcal"], 127)
+        # Heavier packs cost more than their weight: the (L/W)^2 term
+        heavy = fitness.pandolf_watts(78, 30, 1.333, 0) - fitness.pandolf_watts(78, 0, 1.333, 0)
+        self.assertGreater(heavy, 30 * 1.5 * 1.333 ** 2 + 1)
         self.assertNotIn("kcal", fitness.estimate(flat_plan(), {"height_cm": 178}))  # no weight, no calories
 
     def test_K3_climbing_burns_more(self):
         body = {"weight_kg": 78, "height_cm": 178}
         flat, hilly = fitness.estimate(flat_plan(), body), fitness.estimate(flat_plan(climb=100), body)
-        self.assertEqual(hilly["kcal"] - flat["kcal"], 70)  # 1.8 x 100 m x 78 kg / 1000 x 5
+        # 100 m up over 2 km = 5% grade: + 0.35 x 1.333 x 5 x 78 = 182 W for 1500 s = 65 kcal
+        self.assertEqual(hilly["kcal"] - flat["kcal"], 65)
 
     def test_K4_bmi(self):
         self.assertEqual(fitness.bmi({"weight_kg": 78, "height_cm": 178}), {"value": 24.6, "label": "healthy weight"})
@@ -663,6 +669,28 @@ class StreetCrimeTests(unittest.TestCase):
         lg = routes.leg(self.A, self.B, 4.5, None, self.ctx("high"), 15 * 60)
         self.assertEqual(lg["mode"], "walk")
         self.assertTrue(lg["crime"])
+
+    def test_C6_only_serious_violence_reroutes(self):
+        from planner import crime
+        drugs = [(45.5270, -122.6767, 15, "Drug/Narcotic Violations", "700 BLOCK OF SW 6TH AVE")] * 65
+        c = dict(self.ctx("low"), crime=crime.pair_cells(crime.build_index(drugs), [self.A, self.B]))
+        lg = routes.leg(self.A, self.B, 4.5, None, c, 15 * 60)
+        self.assertEqual(lg["mode"], "walk")  # 65 drug offenses: noted, not a reason to ride
+        self.assertIn("65 street crimes (65 drug offenses)", crime.describe(lg["crime"]))
+        self.assertEqual(crime.crime_type("ASSAULT AGGRAVATED: HANDGUN"), "violent")
+        self.assertEqual(crime.crime_type("BATTERY DOMESTIC BATTERY SIMPLE"), None)  # indoors, not street
+        self.assertEqual(crime.crime_type("THEFT POCKET-PICKING"), "theft")
+
+    def test_C7_crime_rides_lower_the_score(self):
+        stops = [("cafe", {"name": "B", "lat": self.B["lat"], "lon": self.B["lon"], "open": "06:00", "close": "22:00",
+                           "dogs": "patio", "tags": []})]
+        base = routes.combine(profiles("me"), request.parse("coffee"), start=self.A, conditions=TOWN_WEATHER)
+        base["start_min"] = 15 * 60
+        safe = routes.simulate(stops, dict(base, crime=None))
+        risky = routes.simulate(stops, dict(base, **{k: v for k, v in self.ctx("low").items() if k != "limits"}))
+        self.assertEqual(risky["crime_rides"], 1)
+        self.assertLess(risky["group_score"], safe["group_score"])
+        self.assertTrue(any("instead of walking" in n and "robberies" in n for n in risky["notes"]), risky["notes"])
 
     def test_C4_most_cautious_person_decides(self):
         me = profiles("me")

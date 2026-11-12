@@ -2,17 +2,24 @@
 
 Estimates, using standard formulas:
 - Stride length ~ 0.414 x height (a common walking estimate); steps = meters walked / stride.
-- Calories from the ACSM walking equation: oxygen used (ml per kg) = 0.1 x meters walked
-  + 1.8 x meters climbed + 3.5 x minutes walking (resting), times the mass moved (body weight
-  plus backpack), at about 5 kcal per liter of oxygen.
-- BMI = weight (kg) / height (m) squared.
+- Calories from the Pandolf load-carriage equation (Pandolf, Givoni & Goldman 1977), leg by leg:
+      M (watts) = 1.5 W + 2.0 (W + L) (L / W)^2 + n (W + L) (1.5 V^2 + 0.35 V G)
+  W body weight (kg), L backpack (kg), V walking speed (m/s, from the leg's distance and time),
+  G grade (%, the leg's climb over its distance), n terrain (1.0: paved city streets).
+  kcal = M x seconds walking / 4184. The 1.5 W term is standing metabolism, so this is the total
+  burned while walking, not only the extra. The backpack costs more than its weight: the
+  (L / W)^2 term grows with heavier packs. Downhill counts as flat (no descent data per leg).
+- BMI = weight (kg) / height (m) squared. Shown to its owner; not used in the calorie formula
+  (weight is).
 
 Body data is sensitive: each person's numbers are computed from their own profile by their
 own agent, and shown only on their own phone. Nobody else's agent receives their weight.
 """
 
 DEFAULT_STRIDE_M = 0.72  # when height is unknown
-KCAL_PER_LITER_O2 = 5.0
+TERRAIN = 1.0            # Pandolf terrain factor: paved roads and sidewalks
+J_PER_KCAL = 4184.0
+WALK_TO_RIDE_M_PER_MIN = 80.0  # walking to and from a bus or taxi
 
 
 def stride_m(body):
@@ -41,8 +48,36 @@ def walking_totals(plan):
             minutes += leg["min"]
         else:
             meters += leg.get("walk_km", 0) * 1000
-            minutes += leg.get("walk_km", 0) * 1000 / 80.0  # about 80 m per minute
+            minutes += leg.get("walk_km", 0) * 1000 / WALK_TO_RIDE_M_PER_MIN
     return meters, climb, minutes
+
+
+def walking_segments(plan):
+    """(meters, meters climbed, minutes) for each stretch walked: every walking leg, and the
+    walks to and from each ride."""
+    for leg in plan["legs"] + ([plan["return_leg"]] if plan.get("return_leg") else []):
+        if leg["mode"] == "walk":
+            yield leg["km"] * 1000, leg.get("climb_m", 0), leg["min"]
+        elif leg.get("walk_km"):
+            yield leg["walk_km"] * 1000, 0, leg["walk_km"] * 1000 / WALK_TO_RIDE_M_PER_MIN
+
+
+def pandolf_watts(weight, load, speed_ms, grade_pct, terrain=TERRAIN):
+    """Metabolic rate (W) walking at speed_ms up grade_pct carrying load kg (Pandolf 1977)."""
+    return (1.5 * weight + 2.0 * (weight + load) * (load / weight) ** 2
+            + terrain * (weight + load) * (1.5 * speed_ms ** 2 + 0.35 * speed_ms * grade_pct))
+
+
+def pandolf_kcal(plan, weight, load):
+    kcal = 0.0
+    for meters, up, minutes in walking_segments(plan):
+        if meters <= 0:
+            continue
+        seconds = max(minutes, 1e-6) * 60
+        speed = meters / seconds
+        grade = min(25.0, 100.0 * up / meters)
+        kcal += pandolf_watts(weight, load, speed, grade) * seconds / J_PER_KCAL
+    return kcal
 
 
 def estimate(plan, body):
@@ -53,10 +88,10 @@ def estimate(plan, body):
     out = {"steps": steps, "km": round(meters / 1000.0, 2), "climb_m": int(climb)}
     weight = body.get("weight_kg")
     if weight:
-        mass = weight + (body.get("backpack_kg") or 0)
-        o2_ml_per_kg = 0.1 * meters + 1.8 * climb + 3.5 * minutes
-        out["kcal"] = int(round(o2_ml_per_kg * mass / 1000.0 * KCAL_PER_LITER_O2))
-        out["load_kg"] = round(mass, 1)
+        load = body.get("backpack_kg") or 0
+        out["kcal"] = int(round(pandolf_kcal(plan, weight, load)))
+        out["load_kg"] = round(weight + load, 1)
+        out["kcal_model"] = "Pandolf"
     return out
 
 

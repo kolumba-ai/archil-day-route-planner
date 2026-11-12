@@ -124,6 +124,7 @@ def climb_m(a, b, ctx=None):
     return total, crossed
 
 
+CRIME_RIDE_PENALTY = 0.1  # off the group score for each ride taken to avoid serious crime
 RIDE_OVERHEAD_MIN = 8  # waiting for transit or a car, and walking to and from it
 
 
@@ -148,10 +149,10 @@ def leg(a, b, pace_kmh, streets=None, ctx=None, minute=None):
                 "streets": on_streets}
         if not spot:
             return walk
-        if tolerance == "high":  # they don't mind: walk, but say so
+        if not spot["avoid"]:  # below their limit (or they don't mind): walk, and say what's there
             walk["crime"] = spot
             return walk
-        unsafe = spot  # too risky to walk at this hour: ride instead
+        unsafe = spot  # too many serious crimes there at this hour: ride instead
     bus = (((ctx or {}).get("bus") or {}).get("pairs") or {}).get(transit_key(a), {}).get(transit_key(b))
     if bus:  # a real bus route stops near both ends (planner/transit.py)
         return {"mode": "ride", "km": round(d, 2), "min": bus["min"], "climb_m": 0, "hills": [],
@@ -352,6 +353,11 @@ def score_itinerary(it, stops, ctx, sunset):
     # Minimizing time spent getting around is a main goal: each minute of travel (walking
     # or riding) costs TRAVEL_WEIGHT, so a plan that zigzags across the city ranks low.
     group = happiness - TRAVEL_WEIGHT * it["travel_min"]
+    # A ride forced by crime is a detour on the group's day: a plan that walks safely ranks higher.
+    crime_rides = sum(1 for lg in it["legs"] + ([it["return_leg"]] if it.get("return_leg") else [])
+                      if lg.get("avoids"))
+    it["crime_rides"] = crime_rides
+    group -= CRIME_RIDE_PENALTY * crime_rides
     if lim.get("prefer_hills"):  # they asked for hills: climbing is a goal, up to HILL_BONUS
         group += HILL_BONUS * clip(it["climb_m"] / 100.0)
     group = 0.0 if it["violations"] else max(0.001, group)

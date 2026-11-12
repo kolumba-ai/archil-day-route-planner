@@ -614,10 +614,11 @@ def limits_view(ctx, req):
             rows.append(("Avoids", ", ".join(lim["avoid_foods"])))
         rows.append(("Museums", "at most %d min" % lim["museum_max_min"]))
         rows.append(("Dog", "yes (Biscuit): dog-friendly stops only" if lim.get("dog") else "no"))
-        rows.append(("Street crime", {"low": "low tolerance: avoid hotspots (bus or taxi instead)",
-                                      "medium": "medium: avoid the worst hotspots",
-                                      "high": "high: walk anyway, hotspots noted"}.get(lim.get("crime_tolerance"),
-                                                                                      lim.get("crime_tolerance"))))
+        tol = lim.get("crime_tolerance") or "low"
+        rows.append(("Street crime", ("%s tolerance: bus or taxi instead of walking past a block with %d+ robberies, "
+                                      "serious assaults or sex offenses around that hour in the past year "
+                                      "(such rides lower a plan's score)" % (tol, crime.SERIOUS_LIMIT[tol]))
+                     if tol in crime.SERIOUS_LIMIT else "high tolerance: walk anyway; risky blocks are noted"))
     people = [p["name"] for p in ctx.get("people") or []]
     if people:
         rows.append(("Group", ", ".join(people) + " (the most cautious limits apply)"))

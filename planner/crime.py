@@ -10,17 +10,23 @@ job of a separate service, not of the app. Sources:
 - Chicago: CPD crimes (data.cityofchicago.org, Socrata ijzp-q8t2)
 Other cities have no source yet: the check says so instead of guessing.
 
-Only crimes that matter to someone walking count (assault, robbery, weapons, drug dealing,
-theft from a person, homicide, kidnapping, shootings); car break-ins, burglary, fraud and
-shoplifting don't. Incidents go into ~150 m cells with a count per hour of the day. A walking
-leg is checked cell by cell along its line, in a 3-hour window around when it is walked. A cell
-is a hotspot when its count is in the city's top 5% (top 2% for "medium" tolerance) of cells
-for that time of day, and at least 4 incidents.
+Only crimes that happen to people on the street count, sorted by type: robbery, serious violence
+(aggravated assault, shootings, homicide, kidnapping), sex offenses, simple assault, theft from a
+person (pickpocketing, purse snatching), weapons and drug offenses. Car break-ins, burglary,
+fraud, shoplifting and domestic violence don't. Incidents go into ~150 m cells, counted per
+type and hour of the day. A walking leg is checked cell by cell along its line, in a 3-hour
+window around when it is walked (over the whole past year).
+
+Only serious violence reroutes a walk: robberies, serious assaults and shootings, sex offenses.
+Drug and weapons offenses, simple assaults and thefts from a person are reported with the walk,
+by type, but never force a ride. A plan with a ride taken to avoid crime scores lower (it's a
+detour forced on the group), so a plan that walks safely wins when otherwise equal.
 
 Tolerance (person's limits, safety.crime_tolerance; the group uses the most cautious):
-- "low" (default): never walk through a hotspot (top 5%); take a bus there, or an Uber/Lyft/taxi.
-- "medium": avoid only the worst hotspots (top 2%).
-- "high": walk anyway; the hotspot is noted.
+- "low" (default): ride instead of walking past a block with 6+ serious crimes in that time window
+  over the past year (bus if one serves the leg, else Uber/Lyft/taxi).
+- "medium": only for 12+.
+- "high": walk anyway; the block is noted.
 """
 import csv
 import datetime
@@ -34,10 +40,27 @@ import urllib.parse
 import urllib.request
 
 CELL_DEG_LAT = 0.00135  # ~150 m
-STREET = re.compile(r"(?i)assault|robbery|weapon|drug|narcotic|pocket|purse|from person|homicide|murder|"
-                    r"kidnap|shooting|intimidation|battery|sex offense|offenses? involving children|human trafficking")
-NOT_STREET = re.compile(r"(?i)vehicle|shoplift|fraud|burglary|vandal|forgery|embezzle|identity|counterfeit")
-TOP = {"low": 0.95, "medium": 0.98}  # hotspot = cell above this share of cells, at that time of day
+# Crime types, in the order they are checked (the first match wins).
+TYPES = [
+    ("robbery", re.compile(r"(?i)robbery")),
+    ("violent", re.compile(r"(?i)aggravated|homicide|murder|manslaughter|shooting|kidnap|abduct")),
+    ("sex", re.compile(r"(?i)rape|sexual assault|sex offense|fondling|sodomy|criminal sexual")),
+    ("assault", re.compile(r"(?i)assault|battery|intimidation")),
+    ("theft", re.compile(r"(?i)pocket|purse|from (the )?person|snatch")),
+    ("weapons", re.compile(r"(?i)weapon")),
+    ("drugs", re.compile(r"(?i)drug|narcotic")),
+]
+NOT_STREET = re.compile(r"(?i)domestic|vehicle|shoplift|fraud|burglary|vandal|forgery|embezzle|identity|counterfeit")
+SERIOUS = ("robbery", "violent", "sex")
+# Serious crimes (robbery, serious violence, sex offenses) in one ~150 m block, in the 3-hour
+# window around the walk, over the past year: at this many, the walk becomes a ride.
+SERIOUS_LIMIT = {"low": 6, "medium": 12}
+# All street crimes at which a block is worth a note on the walk (never a reroute on its own).
+TOTAL_NOTE = 30
+NAMES = {"robbery": ("robbery", "robberies"), "violent": ("serious assault or shooting", "serious assaults or shootings"),
+         "sex": ("sex offense", "sex offenses"), "assault": ("simple assault", "simple assaults"),
+         "theft": ("theft from a person", "thefts from a person"), "weapons": ("weapons offense", "weapons offenses"),
+         "drugs": ("drug offense", "drug offenses")}
 LEVELS = ("low", "medium", "high")
 _lock = threading.Lock()
 
@@ -133,26 +156,50 @@ def _window(hours, h):
     return hours[(h - 1) % 24] + hours[h % 24] + hours[(h + 1) % 24]
 
 
+def crime_type(kind):
+    if NOT_STREET.search(kind):
+        return None
+    return next((t for t, rx in TYPES if rx.search(kind)), None)
+
+
 def build_index(incidents):
-    """{"cells": {cell: {"h": [24 counts], "street": most-named block}}, "cut": {level: [24 thresholds]}}."""
+    """{"cells": {cell: {"t": {type: [24 counts by hour]}, "street": most-named block}}}."""
     cells, names = {}, {}
+    total = 0
     for lat, lon, hour, kind, addr in incidents:
-        if not STREET.search(kind) or NOT_STREET.search(kind):
+        t = crime_type(kind)
+        if not t:
             continue
         c = cell(lat, lon)
-        cells.setdefault(c, [0] * 24)[hour] += 1
+        cells.setdefault(c, {}).setdefault(t, [0] * 24)[hour] += 1
+        total += 1
         if addr:
             names.setdefault(c, {}).setdefault(addr, 0)
             names[c][addr] += 1
-    cut = {}
-    for level, q in TOP.items():
-        cut[level] = []
-        for h in range(24):
-            vals = sorted(_window(v, h) for v in cells.values())
-            cut[level].append(max(4, vals[int(q * (len(vals) - 1))]) if vals else 10 ** 9)
-    return {"cells": {c: {"h": v, "street": _tidy(max(names[c], key=names[c].get)) if c in names else ""}
+    return {"cells": {c: {"t": v, "street": _tidy(max(names[c], key=names[c].get)) if c in names else ""}
                       for c, v in cells.items()},
-            "cut": cut, "incidents": sum(sum(v) for v in cells.values())}
+            "incidents": total, "serious_limit": SERIOUS_LIMIT}
+
+
+def counts_at(info, h):
+    """{type: count} in the 3-hour window around hour h, for one cell."""
+    return {t: _window(hours, h) for t, hours in info["t"].items() if _window(hours, h)}
+
+
+def serious(counts):
+    return sum(counts.get(t, 0) for t in SERIOUS)
+
+
+def notable(counts):
+    """Worth a note on the walk (half the "low" limits)."""
+    return serious(counts) >= SERIOUS_LIMIT["low"] // 2 or sum(counts.values()) >= TOTAL_NOTE
+
+
+def too_much(counts, tolerance):
+    """Only serious violence reroutes a walk; the other street crimes are reported, not acted on."""
+    if tolerance == "high":
+        return False
+    return serious(counts) >= SERIOUS_LIMIT["medium" if tolerance == "medium" else "low"]
 
 
 def _tidy(addr):
@@ -224,12 +271,11 @@ def key(p):
 
 
 def pair_cells(idx, points, max_walk_km=3.0):
-    """For every pair of places close enough to walk between, the hotspot cells along the way
-    (cells over the "low" cut at some hour of the day; nothing else can change a route). Small
-    on purpose: it travels with the outing to every route sandbox."""
+    """For every pair of places close enough to walk between, the blocks along the way that
+    matter: serious crimes reach the "low" limit at some hour, or are notable (for the note).
+    Small on purpose: it travels with the outing to every route sandbox."""
     uniq = {key(p): p for p in points}
-    cut = idx["cut"]["low"]
-    hot = {c for c, v in idx["cells"].items() if any(_window(v["h"], h) >= cut[h] for h in range(24))}
+    hot = {c for c, v in idx["cells"].items() if any(notable(counts_at(v, h)) for h in range(24))}
     pairs, used = {}, {}
     for ka, a in uniq.items():
         for kb, b in uniq.items():
@@ -240,7 +286,7 @@ def pair_cells(idx, points, max_walk_km=3.0):
                 pairs.setdefault(ka, {})[kb] = hit
                 for c in hit:
                     used[c] = idx["cells"][c]
-    return {"source": idx.get("source"), "covers": idx.get("covers"), "cut": idx["cut"], "cells": used,
+    return {"source": idx.get("source"), "covers": idx.get("covers"), "cells": used,
             "pairs": pairs, "incidents": idx.get("incidents", 0)}
 
 
@@ -249,22 +295,38 @@ def _km(a, b):
 
 
 def hotspot(crime, a, b, minute, tolerance):
-    """The worst hotspot on the walk from a to b around that time, or None:
-    {"street", "count", "hour"}. Tolerance "high" still reports it (as a note)."""
+    """The worst block on the walk from a to b around that time, or None:
+    {"street", "hour", "serious", "total", "counts": {type: n}, "avoid": bool}. avoid is True when
+    the block reaches the tolerance's limits; otherwise it is only worth a note."""
     if not crime:
         return None
     cells = (crime.get("pairs") or {}).get(key(a), {}).get(key(b)) or []
     h = int(minute // 60) % 24
-    cut = crime["cut"]["medium" if tolerance == "medium" else "low"][h]
     worst = None
     for c in cells:
         info = crime["cells"].get(c)
-        n = _window(info["h"], h) if info else 0
-        if n >= cut and (worst is None or n > worst["count"]):
-            worst = {"street": info.get("street") or "a block on the way", "count": n, "hour": h}
+        if not info:
+            continue
+        counts = counts_at(info, h)
+        if not notable(counts):
+            continue
+        rank = (too_much(counts, tolerance), serious(counts), sum(counts.values()))
+        if worst is None or rank > worst["_rank"]:
+            worst = {"street": info.get("street") or "a block on the way", "hour": h, "serious": serious(counts),
+                     "total": sum(counts.values()), "counts": counts, "avoid": too_much(counts, tolerance),
+                     "_rank": rank}
+    if worst:
+        worst.pop("_rank")
     return worst
 
 
 def describe(spot):
-    return "%s: %d street crimes reported around %s in the past year" % (
-        spot["street"], spot["count"], "%d%s" % ((spot["hour"] % 12) or 12, "am" if spot["hour"] < 12 else "pm"))
+    """ "24th St & Osage Aly around 10am, past year: 65 street crimes (4 robberies, 1 serious
+    assault or shooting, 38 drug offenses, 14 simple assaults, ...)": serious types first." """
+    def part(t, n):
+        return "%d %s" % (n, NAMES[t][0 if n == 1 else 1])
+    c = spot["counts"]
+    kinds = [part(t, c[t]) for t in sorted(c, key=lambda t: (t not in SERIOUS, -c[t]))]
+    when = "%d%s" % ((spot["hour"] % 12) or 12, "am" if spot["hour"] < 12 else "pm")
+    return "%s around %s, past year: %d street crimes (%s)" % (spot["street"], when, sum(c.values()),
+                                                               ", ".join(kinds))
