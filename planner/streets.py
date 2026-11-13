@@ -169,7 +169,8 @@ def add_paths(plans, start):
         here = start
         for leg, stop in zip(p["legs"], p["stops"]):
             jobs.append((leg, here, stop))
-            here = stop
+            # after a stroll, the next leg starts where the stroll ends
+            here = {"lat": stop["end_lat"], "lon": stop["end_lon"]} if stop.get("end_lat") else stop
         if p.get("return_leg"):  # the walk back to the start
             jobs.append((p["return_leg"], here, start))
     down = threading.Event()

@@ -20,14 +20,17 @@ CATEGORIES = [
     ("food", r"\b(burritos?|lunch|dinner|food|tacos?|restaurants?|brunch|eat)\b"),
     ("beach", r"\b(beach(es)?|ocean)\b"),
     ("waterfront", WATERFRONT),
+    ("stroll", r"\b(stroll|wander|walk)\s+(down|along|on|up|through)\b"),
 ]
+STROLL = re.compile(r"\b(?:stroll|wander|walk)\s+(?:down|along|on|up|through)\s+(?:the\s+)?"
+                    r"((?:[A-Z][\w'.-]*\s?)+?)(?:\s+(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Way|Drive|Dr))?\b(?:[.,;!]|\s+(?:and|then)\b|$)")
 # "riverside at sunset": the stop just before "sunset" is timed for it. A beach is a sunset
 # stop when nothing else is; "sunset" alone (no outdoor stop) still means a beach.
 SUNSET = r"\b(?:at|for|by|around|watch(?:ing)?(?: the)?|see(?: the)?|catch(?: the)?)?\s*(?:the\s+)?sunset\b"
 DEFAULT_CATEGORIES = ["cafe", "museum", "food", "beach"]  # the San Francisco demo's day
 OUTDOOR = ("beach", "waterfront", "park")  # stops that can be timed for sunset
 LABELS = {"cafe": "coffee", "park": "a park", "museum": "a museum", "food": "food", "beach": "a beach",
-          "waterfront": "the riverside / waterfront"}
+          "waterfront": "the riverside / waterfront", "stroll": "a stroll"}
 
 # Cuisines people ask for, mapped to OpenStreetMap's cuisine values.
 CUISINES = {
@@ -153,6 +156,7 @@ def parse(text):
         "prefer_hills": bool(re.search(PREFER_HILLS, low)) and not re.search(AVOID_HILLS, low),
         "categories": categories,
         "sunset_stop": sunset_stop,  # the stop timed for sunset, or None
+        "stroll_street": (STROLL.search(text).group(1).strip() if STROLL.search(text) else None),
         "with": ["ana"] if re.search(r"\bana\b", low) else [],
         "dog": bool(re.search(r"\b(dog|biscuit)\b", low)),
     }

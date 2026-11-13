@@ -49,6 +49,10 @@ def walking_totals(plan):
         else:
             meters += leg.get("walk_km", 0) * 1000
             minutes += leg.get("walk_km", 0) * 1000 / WALK_TO_RIDE_M_PER_MIN
+    for s in plan.get("stops", []):  # a stroll along a street
+        if s.get("stroll_km"):
+            meters += s["stroll_km"] * 1000
+            minutes += s.get("stroll_min") or 0
     return meters, climb, minutes
 
 
@@ -60,6 +64,9 @@ def walking_segments(plan):
             yield leg["km"] * 1000, leg.get("climb_m", 0), leg["min"]
         elif leg.get("walk_km"):
             yield leg["walk_km"] * 1000, 0, leg["walk_km"] * 1000 / WALK_TO_RIDE_M_PER_MIN
+    for s in plan.get("stops", []):  # a stroll along a street
+        if s.get("stroll_km"):
+            yield s["stroll_km"] * 1000, 0, s.get("stroll_min") or s["stroll_km"] * 1000 / WALK_TO_RIDE_M_PER_MIN
 
 
 def pandolf_watts(weight, load, speed_ms, grade_pct, terrain=TERRAIN):

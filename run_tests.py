@@ -28,7 +28,7 @@ from tests.scenarios import SCENARIOS
 ROOT = os.path.dirname(os.path.abspath(__file__))
 KEEP = "--keep" in sys.argv
 # Scenarios that call Nominatim, Overpass, Open-Meteo or OSRM: run one at a time.
-LIVE_MAP_SCENARIOS = {"korean-food-truck", "replay-portland", "ask-start", "city-portland", "city-chicago", "hills-both-ways", "street-routing"}
+LIVE_MAP_SCENARIOS = {"hawthorne-stroll", "korean-food-truck", "replay-portland", "ask-start", "city-portland", "city-chicago", "hills-both-ways", "street-routing"}
 MANUAL = [
     ("H3", "Map draws the selected plan", "check in the browser"),
     ("H4", "Layout at 1280x800", "check in the browser (known failing: map overlaps plans)"),
@@ -209,7 +209,7 @@ def main():
         data = os.path.join(r["path"], "data")
         mine = sorted(d for d in os.listdir(data) if d.startswith("outing-")) if os.path.isdir(data) else []
         # E8 plans twice (local, then sandboxes); M3 twice (avoiding hills, then wanting them)
-        expected = {"sandbox-routes": 2, "hills-both-ways": 2, "ask-start": 4, "replay-portland": 2}.get(r["name"], 1)
+        expected = {"sandbox-routes": 2, "hills-both-ways": 2, "ask-start": 4, "replay-portland": 2, "hawthorne-stroll": 3}.get(r["name"], 1)
         if len(mine) > expected:
             crosstalk.append("%s: %d outing folders" % (r["name"], len(mine)))
         for o in mine:

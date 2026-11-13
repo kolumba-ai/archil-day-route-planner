@@ -160,7 +160,7 @@ def resolve_start(req):
     return start, None, None
 
 
-ICONS = {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️", "park": "🌳", "waterfront": "🌊"}
+ICONS = {"cafe": "☕", "museum": "🏛️", "food": "🌯", "beach": "🏖️", "park": "🌳", "waterfront": "🌊", "stroll": "🛍️"}
 
 
 def place_name(p):
@@ -168,9 +168,15 @@ def place_name(p):
     return re.sub(r"^Start \((.*)\)$", r"\1", p.get("name", ""))
 
 
+def stop_label(c, req):
+    if c == "stroll" and req.get("stroll_street"):
+        return "a stroll along %s" % req["stroll_street"]
+    return request_mod.LABELS.get(c, c)
+
+
 def understood(req, start, city):
     """What the agent understood, for the person to confirm before anyone else is contacted."""
-    stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), request_mod.LABELS.get(c, c),
+    stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), stop_label(c, req),
                                      " at sunset 🌅" if c == req.get("sunset_stop") else "")
                        for c in req["categories"])
     food = []
@@ -180,7 +186,8 @@ def understood(req, start, city):
         food.append("from a food truck")
     lines = ["Here's what I understood:",
              "📅 %s, %s" % (req["day"], city),
-             "📍 Start: %s at %s" % (place_name(start), routes.hhmm(req["start_min"])),
+             "📍 Start: %s%s at %s" % (place_name(start), ", " + start["address"] if start.get("address") else "",
+                                      routes.hhmm(req["start_min"])),
              "🗺️ " + stops]
     if food:
         lines.append("🍽️ " + " ".join(food))
@@ -196,6 +203,8 @@ def understood(req, start, city):
     lines.append("🚶 " + ", ".join(limits))
     who = (["Ana"] if "ana" in req["with"] else []) + (["Biscuit 🐕"] if req["dog"] else [])
     lines.append("👥 With " + " and ".join(who) if who else "👤 Just you")
+    if req.get("not_supported"):  # never drop part of the request silently
+        lines.append("⚠️ I can't plan %s yet, so it's left out." % " or ".join('"%s"' % x for x in req["not_supported"]))
     lines.append("Reply yes to %s, or tell me what to change." % (
         "send the invitation to Ana" if "ana" in req["with"] else "start planning"))
     return "\n".join(lines)
@@ -530,7 +539,8 @@ Rules:
 - Use only facts given. No emoji, no quotes, no plan numbers."""
 NAME_SCHEMA = {"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}},
                "required": ["names"], "additionalProperties": False}
-SHORT = {"cafe": "Coffee", "museum": "Art", "food": "Lunch", "beach": "Beach", "park": "Park", "waterfront": "Riverside"}
+SHORT = {"cafe": "Coffee", "museum": "Art", "food": "Lunch", "beach": "Beach", "park": "Park", "waterfront": "Riverside",
+         "stroll": "Stroll"}
 
 
 def name_routes(plans, req):
@@ -598,7 +608,7 @@ def limits_view(ctx, req):
                      % routes.hhmm(req["end_min"])))
     elif req.get("return_to_start"):
         rows.append(("Finish", "back at the start"))
-    rows.append(("Stops", " → ".join(request_mod.LABELS.get(c, c) for c in req["categories"])))
+    rows.append(("Stops", " → ".join(stop_label(c, req) for c in req["categories"])))
     if req.get("sunset_stop"):
         rows.append(("At sunset", "%s (sunset %s)" % (request_mod.LABELS.get(req["sunset_stop"], req["sunset_stop"]),
                                                      (ctx.get("conditions") or {}).get("sunset", "?"))))

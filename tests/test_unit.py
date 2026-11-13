@@ -780,5 +780,49 @@ class NamesLimitsTests(unittest.TestCase):
         self.assertEqual(saved["limits"][0]["label"], "Day")
 
 
+class StartAndStrollTests(unittest.TestCase):
+    """P: starts given with cross streets, look-alike places rejected, strolls along a street."""
+
+    def test_P1_place_and_cross_streets(self):
+        from planner import places
+        self.assertEqual(places.split_place("St Stephens Catholic Church at 41st and Salmon"),
+                         ("St Stephens Catholic Church", "41st and Salmon"))
+        self.assertEqual(places.split_place("Mission Dolores Park"), ("Mission Dolores Park", None))
+        self.assertEqual(places.split_place("Joe's at the corner of 5th & Main"), ("Joe's", "5th & Main"))
+        self.assertEqual(places._street_rx("SE 41st Ave"), "(^| )41st( |$)")
+
+    def test_P2_look_alike_places_are_rejected(self):
+        from planner import places
+        self.assertFalse(places.same_place("St Stephens Catholic Church", "Saint Patrick Catholic Church"))
+        self.assertTrue(places.same_place("St Stephens Catholic Church", "Saint Stephen Catholic Church"))
+        self.assertTrue(places.same_place("4055 SE Salmon St", "Southeast Salmon Street"))  # addresses
+        self.assertEqual(places.short_address({"display": "Saint Stephen Catholic Church, 1112, Southeast 41st "
+                                                          "Avenue, Hawthorne, Portland"}), "1112 Southeast 41st Avenue")
+
+    def test_P3_stroll_is_walked_and_ends_down_the_street(self):
+        r = request.parse("Plan Saturday in Testville starting at Test Church: coffee, and a stroll down Main Street")
+        self.assertIn(r["stroll_street"], ("Main", "Main Street"))
+        self.assertIn("stroll", r["categories"])
+        c = routes.combine(profiles("me"), r, start=TOWN_START, conditions=TOWN_WEATHER)
+        stroll = {"name": "Stroll along Main Street", "lat": 45.5000, "lon": -122.6000, "end_lat": 45.5000,
+                  "end_lon": -122.5846, "stroll_km": 1.2, "shops": 40, "path": [[45.5, -122.6], [45.5, -122.5846]],
+                  "open": "00:00", "close": "23:59", "dogs": "leash", "tags": ["stroll"]}
+        it = routes.simulate([("stroll", stroll), ("cafe", TOWN["cafe"][0])], c)
+        self.assertFalse(it["violations"])
+        self.assertGreaterEqual(it["walk_km"], 1.2 + it["legs"][1]["km"] - 0.01)  # the stroll is walked
+        self.assertGreater(it["legs"][1]["km"], 1.0)  # the next leg starts at the far end of the street
+        self.assertEqual(it["stops"][0]["stroll_km"], 1.2)
+        self.assertGreater(fitness.estimate(it, {"height_cm": 178})["steps"], 1600)
+
+    def test_P4_summary_never_drops_part_of_the_request(self):
+        req = dict(request.parse("Plan Saturday with Ana: coffee and a stroll down Hawthorne Street"),
+                   not_supported=["a boat tour"])
+        said = planner.understood(req, {"name": "Saint Stephen Catholic Church", "address": "1112 Southeast 41st Avenue",
+                                        "lat": 45.5145, "lon": -122.6197}, "Portland Oregon")
+        self.assertIn("Saint Stephen Catholic Church, 1112 Southeast 41st Avenue", said)
+        self.assertIn("a stroll along Hawthorne", said)
+        self.assertIn('I can\'t plan "a boat tour" yet', said)
+
+
 if __name__ == "__main__":
     unittest.main()

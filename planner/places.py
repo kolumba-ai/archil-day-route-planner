@@ -10,6 +10,7 @@ Only public place names and coordinates are sent. Results are cached in data/pla
 """
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -158,6 +159,98 @@ def spellings(place):
 
 
 NEAR_CITY_KM = 30
+GENERIC = {"the", "and", "of", "at", "saint", "st", "church", "catholic", "cathedral", "parish", "chapel",
+           "park", "cafe", "coffee", "museum", "gallery", "restaurant", "bar", "station", "square", "center",
+           "centre", "building", "plaza", "street", "avenue", "road", "blvd", "boulevard", "hall", "house"}
+
+
+def _stem(w):
+    w = w.lower().replace("’", "'")
+    w = re.sub(r"'s$", "", w)
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+
+def same_place(query, found_name):
+    """Does a geocoder hit really match what was asked? Its name must contain the query's
+    distinctive words ("St Stephens Catholic Church" is not "Saint Patrick Catholic Church").
+    Street addresses ("4055 SE Salmon St") are not checked: they have no name to compare."""
+    if re.match(r"^\s*\d", query):
+        return True
+    want = {_stem(w) for w in re.findall(r"[A-Za-z']{3,}", query)} - GENERIC
+    have = {_stem(w) for w in re.findall(r"[A-Za-z']{3,}", found_name or "")}
+    return not want or want <= have
+
+
+def short_address(hit):
+    """ "Saint Stephen Catholic Church, 1112, Southeast 41st Avenue, Hawthorne, ..." -> "1112 Southeast 41st Avenue"."""
+    parts = [p.strip() for p in (hit.get("display") or "").split(",")]
+    if len(parts) > 2 and parts[1].isdigit():
+        return "%s %s" % (parts[1], parts[2])
+    return parts[1] if len(parts) > 1 else ""
+
+
+NEAR_WORDS = r"(?:at|on|near|by|off|next to)\s+(?:the\s+)?(?:corner\s+of\s+)?"
+STREETISH = re.compile(r"(?i)\d|\b(st|street|ave|avenue|blvd|boulevard|rd|road|way|dr|drive|pl|place|ln|lane)\b|&|\band\b")
+
+
+def split_place(place):
+    """ "St Stephens Catholic Church at 41st and Salmon" -> ("St Stephens Catholic Church", "41st and Salmon").
+    Returns (place, None) when there are no cross streets or address after the name."""
+    m = re.match(r"^(.*?\S)\s+" + NEAR_WORDS + r"(.+)$", place.strip(), re.I)
+    if m and STREETISH.search(m.group(2)):
+        return m.group(1).strip(" ,"), m.group(2).strip(" ,.")
+    return place, None
+
+
+def _street_rx(token):
+    """OSM regex for one street of an intersection: "41st" matches "Southeast 41st Avenue"."""
+    t = re.sub(r"(?i)\b(st|street|ave|avenue|blvd|boulevard|rd|road)\.?$", "", token.strip()).strip()
+    t = re.sub(r"(?i)^(se|sw|ne|nw|n|s|e|w|southeast|southwest|northeast|northwest)\s+", "", t)
+    return "(^| )%s( |$)" % re.escape(t).replace("\\ ", " ") if t else None
+
+
+def find_intersection(where, center, radius_m=20000):
+    """Where two named streets cross ("41st and Salmon", "SE 41st Ave & Salmon St"), near center.
+    Returns [{"lat", "lon", "name"}], nearest first."""
+    parts = [p for p in re.split(r"(?i)\s+(?:and|&|at|/|x)\s+|\s*&\s*", where) if p.strip()]
+    if len(parts) != 2:
+        return []
+    rx = [_street_rx(p) for p in parts]
+    if not all(rx):
+        return []
+    q = ('[out:json][timeout:30];way[highway][name~"{a}",i](around:{r},{la:.5f},{lo:.5f})->.a;'
+         'way[highway][name~"{b}",i](around:{r},{la:.5f},{lo:.5f})->.b;node(w.a)(w.b);out;').format(
+        a=rx[0], b=rx[1], r=radius_m, la=center["lat"], lo=center["lon"])
+    from .routes import km
+    nodes = _cached("x:%s:%.3f,%.3f" % (where.lower(), center["lat"], center["lon"]), lambda: _overpass(q),
+                    ttl=30 * 24 * 3600) or []
+    hits = [{"lat": n["lat"], "lon": n["lon"], "name": "%s & %s" % (parts[0].strip(), parts[1].strip())}
+            for n in nodes if "lat" in n]
+    return sorted(hits, key=lambda h: km(h, center))
+
+
+def find_start_near(place, near, city, center):
+    """A named place given with its cross streets or address ("St Stephens Catholic Church" near
+    "41st and Salmon"): the place by name if it is within 600 m of those streets, else the
+    intersection or address itself (named after the place as typed)."""
+    from .routes import km
+    spots = find_intersection(near, center) if center else []
+    if not spots:
+        addr = geocode("%s, %s" % (near, city)) if city else geocode(near)
+        spots = [dict(addr, name=near)] if addr and (not center or km(addr, center) <= NEAR_CITY_KM) else []
+    named = None
+    try:
+        named = find_start(place, city, city_center_fallback=False)
+    except Exception:
+        named = None
+    if named and spots:
+        best = min(spots, key=lambda s: km(s, named))
+        if km(best, named) <= 0.6:  # the cross streets confirm the place found by name
+            return dict(named, near=near)
+        return dict(best, name="%s (%s)" % (place, near), found_as=best["name"])
+    if spots:
+        return dict(spots[0], name="%s (%s)" % (place, near), found_as=spots[0]["name"])
+    return named
 
 
 def find_start(place, city, city_center_fallback=True):
@@ -176,13 +269,19 @@ def find_start(place, city, city_center_fallback=True):
     if place:
         for v in spellings(place):
             hit = geocode("%s, %s" % (v, city) if city else v)
-            if not hit:
-                continue
-            found = dict(hit, name=v if v == place else hit["name"], found_as=hit["name"])
+            if not hit or not same_place(v, hit.get("name")):
+                continue  # nothing, or a different place with a similar name
+            found = dict(hit, name=hit["name"] if hit.get("name") and not re.match(r"^\s*\d", v) else v,
+                         found_as=hit["name"], address=short_address(hit))
             if center and km(hit, center) > NEAR_CITY_KM:
                 far = far or found
                 continue
             return found
+        name, near = split_place(place)
+        if near:  # "X at 41st and Salmon": find X, checked against (or replaced by) the cross streets
+            hit = find_start_near(name, near, city, center)
+            if hit and not (center and km(hit, center) > NEAR_CITY_KM):
+                return hit
         if far:
             return far
     if city and city_center_fallback:
@@ -463,3 +562,77 @@ def conditions(center, day_name):
                                      "fog": vis is not None and vis < 1000}}
     return {"day": day_name, "date": date, "sunset": d["daily"]["sunset"][0][11:16], "hourly": hourly,
             "source": "Open-Meteo forecast"}
+
+
+# ---------------------------------------------------------------- strolls
+
+STROLL_KM = 1.2  # how much of the street the stroll covers
+
+
+def find_stroll(street, center, radius_m=5000):
+    """A stroll along a named street ("Hawthorne"): the liveliest ~1.2 km stretch near center,
+    where the most shops, cafes and restaurants line the street (OpenStreetMap). Returns a venue
+    that starts at one end and finishes at the other, or None."""
+    from .routes import km
+    rx = _street_rx(street)
+    if not rx:
+        return None
+    q = ('[out:json][timeout:40];way[highway][name~"{rx}",i](around:{r},{la:.5f},{lo:.5f})->.st;'
+         '.st out geom;node(around.st:35)[~"^(shop|amenity)$"~"."];out;').format(
+        rx=rx, r=radius_m, la=center["lat"], lo=center["lon"])
+    elements = _cached("stroll:%s:%.3f,%.3f:%d" % (street.lower(), center["lat"], center["lon"], radius_m),
+                       lambda: _overpass(q), ttl=7 * 24 * 3600) or []
+    ways = [e for e in elements if e["type"] == "way" and e.get("geometry")]
+    pois = [e for e in elements if e["type"] == "node" and "lat" in e]
+    if not ways:
+        return None
+    # The street itself, not "Hawthorne Bridge": among the streets of that name, the one with
+    # the most shops and cafes along it (bridges, ramps and trails never qualify).
+    names = {}
+    for w in ways:
+        n = (w.get("tags") or {}).get("name", street)
+        if re.search(r"(?i)\b(bridge|viaduct|ramp|tunnel|trail|path|exit|onramp|offramp)\b", n):
+            continue
+        names.setdefault(n, []).extend((g["lat"], g["lon"]) for g in w["geometry"])
+    if not names:
+        return None
+
+    def shops_along(pts):
+        grid = {(round(la, 3), round(lo, 3)) for la, lo in pts}
+        return sum(1 for p in pois if (round(p["lat"], 3), round(p["lon"], 3)) in grid)
+    name = max(names, key=lambda n: (shops_along(names[n]), len(names[n])))
+    pts = names[name]
+    # Position along the street: project on its main direction (streets are mostly straight lines).
+    (la1, lo1), (la2, lo2) = max(((a, b) for a in pts[:: max(1, len(pts) // 40)] for b in pts[:: max(1, len(pts) // 40)]),
+                                 key=lambda ab: km({"lat": ab[0][0], "lon": ab[0][1]}, {"lat": ab[1][0], "lon": ab[1][1]}))
+    cos = math.cos(math.radians(la1))
+    dx, dy = (lo2 - lo1) * cos, la2 - la1
+    norm = math.hypot(dx, dy) or 1.0
+    along = lambda la, lo: ((lo - lo1) * cos * dx + (la - la1) * dy) / norm * 111.0  # km from one end
+    length = along(la2, lo2)
+    if length < 0.3:
+        return None
+    win = min(STROLL_KM, length)
+    marks = sorted(along(p["lat"], p["lon"]) for p in pois)
+    best, best_n = 0.0, -1
+    step = 0.1
+    x = 0.0
+    while x + win <= length + 1e-9:
+        n = sum(1 for m in marks if x <= m <= x + win)
+        # ties: the stretch nearer the start
+        mid = x + win / 2
+        if n > best_n or (n == best_n and abs(mid - along(center["lat"], center["lon"])) <
+                          abs(best + win / 2 - along(center["lat"], center["lon"]))):
+            best, best_n = x, n
+        x += step
+    seg = sorted((p for p in pts if best - 0.02 <= along(*p) <= best + win + 0.02), key=lambda p: along(*p))
+    if len(seg) < 2:
+        return None
+    a, b = {"lat": seg[0][0], "lon": seg[0][1]}, {"lat": seg[-1][0], "lon": seg[-1][1]}
+    if km(b, center) < km(a, center):  # start at the end nearer the starting point
+        a, b, seg = b, a, seg[::-1]
+    return {"name": "Stroll along %s" % name, "lat": round(a["lat"], 6), "lon": round(a["lon"], 6),
+            "end_lat": round(b["lat"], 6), "end_lon": round(b["lon"], 6), "stroll_km": round(win, 2),
+            "shops": max(best_n, 0), "path": [[round(p[0], 6), round(p[1], 6)] for p in seg[:: max(1, len(seg) // 60)]],
+            "open": "00:00", "close": "23:59", "dogs": "leash", "dogs_known": False, "tags": ["stroll", "street"],
+            "source": "https://www.openstreetmap.org/search?query=%s" % urllib.parse.quote(name)}

@@ -31,12 +31,14 @@ Rules:
 - "start_time" / "end_time": 24-hour "HH:MM". end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
 - "max_walk_km": the walking limit in kilometers (convert miles: x 1.609). 0 if none.
 - "day": the weekday, e.g. "Saturday". Empty string if none.
-- "stops": the kinds of places to visit, from: cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
+- "stops": the kinds of places to visit, in order, from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
+- "stroll_street": for "a stroll down Hawthorne Street" / "walk along Valencia", the street name as written ("Hawthorne Street"); add "stroll" to "stops" in its place. Empty string if none.
+- "not_supported": things the message asks for that none of the stop types or fields above can hold (e.g. "see the cherry blossoms", "a boat tour"), each as a short phrase from the message. Empty if everything fits.
 - "sunset_stop": the stop the message wants at sunset ("riverside at sunset" -> "waterfront", "beach at sunset" -> "beach"). Must be one of "stops". Empty string if the message doesn't tie a stop to sunset. The starting place is not a stop. In the order mentioned.
 - "avoid_hills" / "prefer_hills": true only if the message says so ("avoid hills", "flat" / "I want hills", "a good climb").
 - Later text corrects earlier text: if the message ends with a correction ("make it riverside, not a park"), apply it.
 - "with_ana": true if Ana is coming. "dog": true if a dog (Biscuit) is coming.
-- "cuisines": cuisines asked for, lowercase English adjectives (e.g. "korean", "japanese", "mexican", "thai", "vegan"). Empty if none.
+- "cuisines": cuisines asked for, lowercase English adjectives (e.g. "korean", "japanese", "mexican", "thai", "vegan"), including the cuisine a dish implies: burritos or tacos -> "mexican", sushi or ramen -> "japanese", pho -> "vietnamese", pad thai -> "thai", pizza -> "pizza", burgers -> "burger". Empty if none.
 - "food_truck": true if they ask for a food truck, food cart or street food.
 - "return_to_start": true if they must end back where they started ("back at the place of departure by 3pm")."""
 
@@ -49,8 +51,10 @@ SCHEMA = {
         "end_time": {"type": "string"},
         "max_walk_km": {"type": "number"},
         "day": {"type": "string"},
-        "stops": {"type": "array", "items": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront"]}},
-        "sunset_stop": {"type": "string", "enum": ["", "cafe", "park", "museum", "food", "beach", "waterfront"]},
+        "stops": {"type": "array", "items": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront", "stroll"]}},
+        "sunset_stop": {"type": "string", "enum": ["", "cafe", "park", "museum", "food", "beach", "waterfront", "stroll"]},
+        "stroll_street": {"type": "string"},
+        "not_supported": {"type": "array", "items": {"type": "string"}},
         "avoid_hills": {"type": "boolean"},
         "prefer_hills": {"type": "boolean"},
         "with_ana": {"type": "boolean"},
@@ -60,7 +64,7 @@ SCHEMA = {
         "return_to_start": {"type": "boolean"},
     },
     "required": ["city", "start_place", "start_time", "end_time", "max_walk_km", "day", "stops",
-                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "cuisines", "food_truck", "return_to_start"],
+                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "not_supported", "cuisines", "food_truck", "return_to_start"],
     "additionalProperties": False,
 }
 
@@ -117,7 +121,7 @@ def blank(text):
     return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
             "end_min": None, "cuisines": [], "food_truck": False, "return_to_start": False, "max_walk_km": None,
             "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
-            "sunset_stop": None, "with": [], "dog": False}
+            "sunset_stop": None, "stroll_street": None, "not_supported": [], "with": [], "dog": False}
 
 
 def ask_openai(system, text, schema, name="fields", timeout=20):
@@ -204,7 +208,13 @@ def merge(text, ai, base, who="claude"):
     day = (ai.get("day") or "").strip().capitalize()
     if day.lower() in rules.DAYS:
         take("day", day)
-    stops = [s for s in ai.get("stops") or [] if s in ("cafe", "park", "museum", "food", "beach", "waterfront")]
+    street = (ai.get("stroll_street") or "").strip()
+    if street and _norm(re.sub(r"(?i)\s+(street|st|avenue|ave|boulevard|blvd|road|rd)$", "", street)) in msg:
+        take("stroll_street", street)
+    stops = [s for s in ai.get("stops") or [] if s in ("cafe", "park", "museum", "food", "beach", "waterfront", "stroll")]
+    if not out.get("stroll_street"):
+        stops = [s for s in stops if s != "stroll"]  # a stroll needs its street
+    take("not_supported", [x.strip() for x in ai.get("not_supported") or [] if x.strip()][:5])
     if stops:
         take("categories", list(dict.fromkeys(stops)))
         sun = ai.get("sunset_stop") or ""

@@ -72,6 +72,15 @@ def search_category(category, context):
     Default: Claude if a key is set, otherwise seed data.
     """
     mode = os.environ.get("PLANNER_SEARCH", "")
+    if category == "stroll":  # a walk along the street they named, from OpenStreetMap
+        from . import places
+        street = (context.get("request") or {}).get("stroll_street")
+        try:
+            v = places.find_stroll(street, context["start"]) if street else None
+        except Exception as e:
+            print("Stroll lookup failed for %s: %r" % (street, e))
+            v = None
+        return ([v] if v else []), "OpenStreetMap"
     if context.get("city"):
         return search_city(category, context, mode)
     if mode == "keenable":

@@ -472,7 +472,44 @@ def korean_food_truck(r):
                 [p["end"] for p in plans], secs))
 
 
+HAWTHORNE = ("Plan Saturday with Ana and Biscuit starting from St Stephens Catholic Church in Portland Oregon: "
+             "coffee, a park, burritos, and a stroll down Hawthorne Street")
+HAWTHORNE_REPLY = "St Stephens Catholic Church at 41st and Salmon in SE Portland OR"
+
+
+def hawthorne_stroll(r):
+    """M5: your conversation: a stroll down Hawthorne, then the start clarified with cross streets."""
+    import server
+    os.environ["PLANNER_ROUTING"] = "osrm"
+    church = {"lat": 45.5145, "lon": -122.6197}
+    first = planner.Run()
+    planner.plan(first, HAWTHORNE, confirmed=False)
+    action, text = server.interpret(first, "Me", HAWTHORNE_REPLY)
+    second = planner.Run()
+    planner.plan(second, text, confirmed=False)
+    run, secs, _ = run_planner(text, "allow", timeout=400)
+    problems = []
+    for label, rr in (("first", first), ("after the reply", second), ("plans", run)):
+        place = (ev(rr, "place") or [{}])[0]
+        if not place or routes.km(place, church) > 0.3:
+            problems.append("%s: start %s" % (label, place.get("start") or [e["text"][:80] for e in ev(rr, "message")][-1:]))
+    said = ev(second, "message")[-1]["text"] if ev(second, "message") else ""
+    if "Hawthorne" not in said or "1112" not in said:
+        problems.append("summary: %r" % said[:200])
+    for p in plans_of(run):
+        strolls = [s for s in p["stops"] if s["category"] == "stroll"]
+        if not strolls or "Hawthorne" not in strolls[0]["name"]:
+            problems.append("plan %d has no Hawthorne stroll" % p["rank"])
+    if not plans_of(run):
+        problems.append("no plans: %s" % [e["text"][:80] for e in ev(run, "message")][-1:])
+    r.check("M5", "Stroll down Hawthorne; start given with cross streets", not problems,
+            "; ".join(problems[:3]) or "start %s; %d plans, each strolls %s; %.0f s" % (
+                ev(run, "place")[0]["start"], len(plans_of(run)),
+                plans_of(run)[0]["stops"][[s["category"] for s in plans_of(run)[0]["stops"]].index("stroll")]["name"], secs))
+
+
 SCENARIOS = {
+    "hawthorne-stroll": (hawthorne_stroll, "test-base"),
     "korean-food-truck": (korean_food_truck, "test-base"),
     "subq-decides": (subq_decides, "after-search"),
     "claude-parsing": (claude_parsing, "test-base"),

@@ -32,6 +32,7 @@ HILLS = [
 ]
 
 DWELL = {"cafe": 30, "food": 45, "park": 45, "outdoor_alternative": 50, "beach": 60, "waterfront": 45}
+STROLL_BROWSE_MIN = 20  # looking in windows along the way
 
 
 def sunset_stop(ctx):
@@ -225,7 +226,10 @@ def simulate(stops, ctx):
                 t = arrive = sunset - 60
                 if idle >= 45:
                     notes.append("About %d min of free time before %s" % (idle, v["name"]))
-        if cat == "museum":
+        if cat == "stroll":  # walking the street at an easy pace, with time to look around
+            dwell = round(v.get("stroll_km", 1.0) / lim["pace_kmh"] * 60 * 1.3) + STROLL_BROWSE_MIN
+            walk_km += v.get("stroll_km", 0)
+        elif cat == "museum":
             dwell = min(lim["museum_max_min"], 90) if v.get("kind") == "museum" else DWELL["outdoor_alternative"]
         else:
             dwell = DWELL.get(cat, 45)
@@ -247,10 +251,14 @@ def simulate(stops, ctx):
             notes.append("Couldn't check %s online; confirm its hours and dog rules" % v["name"])
         if cat == "food" and (ctx.get("request") or {}).get("food_truck") and not v.get("food_truck"):
             notes.append("No food truck fits this route; %s is a restaurant" % v["name"])
-        timeline.append({"category": cat, "name": v["name"], "lat": v["lat"], "lon": v["lon"],
-                         "arrive": hhmm(arrive), "leave": hhmm(leave), "source": v.get("source", "")})
+        stop = {"category": cat, "name": v["name"], "lat": v["lat"], "lon": v["lon"],
+                "arrive": hhmm(arrive), "leave": hhmm(leave), "source": v.get("source", "")}
+        if cat == "stroll":
+            stop.update(stroll_km=v.get("stroll_km"), stroll_min=dwell - STROLL_BROWSE_MIN, path=v.get("path"),
+                        end_lat=v["end_lat"], end_lon=v["end_lon"], shops=v.get("shops"))
+        timeline.append(stop)
         t = leave
-        here = v
+        here = {"name": v["name"], "lat": v["end_lat"], "lon": v["end_lon"]} if cat == "stroll" else v
     back = None
     if ctx.get("return_to_start"):  # "back at the place of departure": the walk home counts too
         back = leg(here, start, lim["pace_kmh"], ctx.get("streets"), ctx, t)
