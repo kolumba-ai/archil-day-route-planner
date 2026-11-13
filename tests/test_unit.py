@@ -823,6 +823,42 @@ class StartAndStrollTests(unittest.TestCase):
         self.assertIn("a stroll along Hawthorne", said)
         self.assertIn('I can\'t plan "a boat tour" yet', said)
 
+    def test_P5_named_start_is_found_in_the_city_map_data(self):
+        """"ST Stephens Catholic Church" in Portland: the church in the data around the city, not a
+        namesake in England (worldwide geocoder) or another Catholic church (fuzzy match)."""
+        from unittest import mock
+        from planner import places
+        self.assertIn("Saint Stephen Catholic Church", places.spellings("ST Stephens Catholic Church"))
+        center = {"lat": 45.5202, "lon": -122.6742}
+        data = [
+            {"type": "way", "center": {"lat": 45.53, "lon": -122.66}, "tags": {"name": "Southeast Stephens Professional Building", "addr:street": "Southeast Stephens Street"}},
+            {"type": "way", "center": {"lat": 45.56, "lon": -122.64}, "tags": {"name": "Greater Saint Stephen Missionary Baptist Church", "amenity": "place_of_worship"}},
+            {"type": "node", "lat": 45.52, "lon": -122.68, "tags": {"name": "Saint Stephen Preschool", "amenity": "kindergarten"}},
+            {"type": "way", "center": {"lat": 45.5145, "lon": -122.6197}, "tags": {"name": "Saint Stephen Catholic Church", "amenity": "place_of_worship", "denomination": "roman_catholic", "addr:housenumber": "1112", "addr:street": "Southeast 41st Avenue"}},
+            {"type": "way", "center": {"lat": 45.5347, "lon": -122.6911}, "tags": {"name": "Saint Patrick Catholic Church", "amenity": "place_of_worship", "denomination": "roman_catholic"}},
+        ]
+        with mock.patch.object(places, "_cached", lambda key, fn, ttl=0: data):
+            hit = places.find_by_name("ST Stephens Catholic Church", center)
+        self.assertEqual(hit["name"], "Saint Stephen Catholic Church")
+        self.assertEqual(hit["address"], "1112 Southeast 41st Avenue")
+
+    def test_P6_web_lookup_is_checked_against_the_map(self):
+        """A place the map data has no name for: Claude's web search gives the address, the map places
+        it. A different place, or an address far from the city, is not used."""
+        from unittest import mock
+        from planner import places
+        center = {"lat": 45.5202, "lon": -122.6742}
+        web = {"found": True, "name": "Common Grounds Coffeehouse", "street_address": "4321 SE Hawthorne Blvd"}
+        with mock.patch.object(places, "lookup_on_web", lambda p, c: web), \
+                mock.patch.object(places, "find_address", lambda a, c: {"lat": 45.5122, "lon": -122.6178}), \
+                mock.patch.object(places, "find_by_name", lambda p, c, radius_m=0: None):
+            hit = places.find_on_web("Common Grounds Coffeehouse", "Portland Oregon", center)
+            self.assertEqual((hit["address"], hit["found_via"]), ("4321 SE Hawthorne Blvd", "web"))
+            self.assertIsNone(places.find_on_web("Common Grounds Coffee Roasters Annex", "Portland Oregon", center))
+        with mock.patch.object(places, "lookup_on_web", lambda p, c: web), \
+                mock.patch.object(places, "find_address", lambda a, c: {"lat": 47.6, "lon": -122.3}):  # Seattle
+            self.assertIsNone(places.find_on_web("Common Grounds Coffeehouse", "Portland Oregon", center))
+
 
 if __name__ == "__main__":
     unittest.main()

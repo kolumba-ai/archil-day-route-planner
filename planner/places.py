@@ -144,10 +144,10 @@ def spellings(place):
     out = [place]
     p = re.sub(r"(\w)'s\b", r"\1", place)  # possessive: Stephen's -> Stephen
     out.append(p)
-    out.append(re.sub(r"\bSt\.?\s", "Saint ", p))
-    out.append(re.sub(r"\bSt\.?\s", "St. ", p))
+    out.append(re.sub(r"(?i)\bSt\.?\s", "Saint ", p))
+    out.append(re.sub(r"(?i)\bSt\.?\s", "St. ", p))
     # Possessive typed without the apostrophe: "St Stephens" -> "Saint Stephen".
-    q = re.sub(r"\b(St\.?|Saint)\s+(\w{3,}?)s\b", r"Saint \2", p)
+    q = re.sub(r"(?i)\b(St\.?|Saint)\s+(\w{3,}?)s\b", r"Saint \2", p)
     if q != p:
         out.append(q)
     seen, uniq = set(), []
@@ -253,6 +253,164 @@ def find_start_near(place, near, city, center):
     return named
 
 
+SEARCH_KM = 25          # how far from the city center a named start is looked for in the map data
+KIND_WORDS = {          # words in a request that say what kind of place it is -> OSM tags that confirm it
+    "church": {"amenity": "place_of_worship"}, "cathedral": {"amenity": "place_of_worship"},
+    "chapel": {"amenity": "place_of_worship"}, "parish": {"amenity": "place_of_worship"},
+    "catholic": {"denomination": "roman_catholic"}, "park": {"leisure": "park"},
+    "museum": {"tourism": "museum"}, "gallery": {"tourism": "gallery"}, "cafe": {"amenity": "cafe"},
+    "coffee": {"amenity": "cafe"}, "school": {"amenity": "school"}, "library": {"amenity": "library"},
+    "station": {"public_transport": "station"}, "hotel": {"tourism": "hotel"},
+}
+
+
+def address_of(tags):
+    """ "1112 Southeast 41st Avenue" from OSM addr:* tags, or ""."""
+    return " ".join(x for x in (tags.get("addr:housenumber"), tags.get("addr:street")) if x)
+
+
+def find_by_name(place, center, radius_m=SEARCH_KM * 1000):
+    """Find a named place in the OpenStreetMap data around the city, the way a person would:
+    every place whose name has the request's distinctive words ("Stephen" for "ST Stephens
+    Catholic Church"), streets and bus stops left out, best match first. A match scores for each
+    other word it shares and for tags that fit the words ("church" -> a place of worship,
+    "catholic" -> Roman Catholic); nearer the center breaks ties.
+    Returns {"name", "lat", "lon", "display", "address", "found_as"} or None."""
+    from .routes import km
+    if not place or not center or re.match(r"^\s*\d", place):
+        return None
+    words = [w for w in re.findall(r"[A-Za-z']{3,}", place)]
+    key = sorted({_stem(w) for w in words} - GENERIC, key=len, reverse=True)
+    if not key:
+        return None
+    rx = "(^|[^a-z])%s('?s)?([^a-z]|$)" % re.escape(key[0].replace("'", ""))
+    q = ('[out:json][timeout:40];nwr[name~"{rx}",i][!highway][!public_transport][!railway]'
+         '(around:{r},{la:.5f},{lo:.5f});out center tags;').format(rx=rx, r=int(radius_m), la=center["lat"],
+                                                                   lo=center["lon"])
+    els = _cached("named:%s:%.3f,%.3f:%d" % (key[0], center["lat"], center["lon"], radius_m),
+                  lambda: _overpass(q), ttl=30 * 24 * 3600) or []
+    stems = {_stem(w) for w in words}
+    best = None
+    for e in els:
+        tags = e.get("tags") or {}
+        name = tags.get("name", "")
+        pos = e.get("center") or e
+        if "lat" not in pos or not same_place(place, name) or tags.get("waterway") or tags.get("boundary"):
+            continue
+        have = {_stem(w) for w in re.findall(r"[A-Za-z']{3,}", name)}
+        score = 2 * len(stems & have) - 0.5 * len(have - stems)  # shared words count, extra words cost
+        for w in stems:
+            for k, v in (KIND_WORDS.get(w) or {}).items():
+                if tags.get(k) == v:
+                    score += 3
+        if address_of(tags):
+            score += 0.5
+        hit = {"name": name, "lat": pos["lat"], "lon": pos["lon"], "found_as": name,
+               "address": address_of(tags), "display": ", ".join(x for x in (name, address_of(tags)) if x)}
+        rank = (score, -km(hit, center))
+        if best is None or rank > best[0]:
+            best = (rank, hit)
+    return best[1] if best else None
+
+
+def geocode_near(query, center, km_box=SEARCH_KM):
+    """Nominatim restricted to a box around the city, so a name never lands on another continent."""
+    def fetch():
+        d = km_box / 111.0
+        dl = d / max(0.2, math.cos(math.radians(center["lat"])))
+        url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+            {"q": query, "format": "jsonv2", "limit": 1, "bounded": 1,
+             "viewbox": "%.4f,%.4f,%.4f,%.4f" % (center["lon"] - dl, center["lat"] + d, center["lon"] + dl,
+                                                 center["lat"] - d)})
+        res = _nominatim_get(url)
+        if not res:
+            return None
+        r = res[0]
+        return {"name": r.get("name") or query, "lat": float(r["lat"]), "lon": float(r["lon"]),
+                "display": r.get("display_name", query)}
+    return _cached("geonear:%s:%.3f,%.3f" % (query.lower(), center["lat"], center["lon"]), fetch)
+
+
+WEB_SCHEMA = {"type": "object", "additionalProperties": False,
+              "required": ["found", "name", "street_address"],
+              "properties": {"found": {"type": "boolean"}, "name": {"type": "string"},
+                             "street_address": {"type": "string"}}}
+WEB_SYSTEM = ("Find the street address of the place the user names, in the city they name. Search the web. "
+              "Give the place's official name and its street address (number and street, no city). "
+              "Answer found=false if you can't confirm the place exists in that city.")
+
+
+def lookup_on_web(place, city):
+    """Ask Claude, with web search, for the place's street address: {"name", "street_address"} or None.
+    Only the address is used, and only after the map confirms it (see find_start)."""
+    if not os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("PLANNER_PARSER") == "rules":
+        return None
+
+    def fetch():
+        import anthropic
+        from .understand import claude_model
+        resp = anthropic.Anthropic(max_retries=1).messages.create(
+            model=claude_model(), max_tokens=3000, system=WEB_SYSTEM,
+            messages=[{"role": "user", "content": "Place: %s\nCity: %s" % (place, city)}],
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": WEB_SCHEMA}},
+            timeout=60)
+        if resp.stop_reason not in ("end_turn", "stop_sequence"):
+            return None
+        texts = [b.text for b in resp.content if b.type == "text"]
+        out = json.loads(texts[-1]) if texts else {}
+        return out if out.get("found") and out.get("street_address") else None
+    return _cached("web:%s|%s" % (place.lower(), (city or "").lower()), fetch)
+
+
+def find_address(addr, center, radius_m=SEARCH_KM * 1000):
+    """ "4321 SE Hawthorne Blvd" in the map data's addr:* tags, near center: {"lat", "lon"} or None.
+    Nominatim misses many house numbers that buildings and shops carry on OpenStreetMap."""
+    m = re.match(r"^\s*(\d+[A-Za-z]?)\s+(.+)$", addr or "")
+    if not m or not center:
+        return None
+    street = m.group(2).split(",")[0].strip()
+    rx = _street_rx(street)
+    if not rx:
+        return None
+    d = re.match(r"(?i)^(se|sw|ne|nw|n|s|e|w|southeast|southwest|northeast|northwest|north|south|east|west)\.?\s", street)
+    if d:  # "SE 41st Ave" is not "NE 41st Ave": the direction must match too
+        full = {"se": "southeast", "sw": "southwest", "ne": "northeast", "nw": "northwest", "n": "north",
+                "s": "south", "e": "east", "w": "west"}.get(d.group(1).lower(), d.group(1).lower())
+        rx = "^(%s|%s) (.* )?%s" % (full, d.group(1).lower(), rx.replace("(^| )", ""))
+    q = ('[out:json][timeout:30];nwr["addr:housenumber"="{n}"]["addr:street"~"{rx}",i]'
+         '(around:{r},{la:.5f},{lo:.5f});out center;').format(n=m.group(1), rx=rx, r=int(radius_m),
+                                                                la=center["lat"], lo=center["lon"])
+    els = _cached("addr:%s:%s:%.3f,%.3f" % (m.group(1), rx, center["lat"], center["lon"]), lambda: _overpass(q),
+                  ttl=30 * 24 * 3600) or []
+    from .routes import km
+    spots = [e.get("center") or e for e in els]
+    spots = [{"lat": p["lat"], "lon": p["lon"]} for p in spots if "lat" in p]
+    return min(spots, key=lambda p: km(p, center)) if spots else None
+
+
+def find_on_web(place, city, center):
+    """The place's address from a web search, placed with the map data: the address must be on
+    the map within reach of the city, and the name found must be the one asked for."""
+    from .routes import km
+    try:
+        web = lookup_on_web(place, city)
+    except Exception:
+        return None
+    if not web or not same_place(place, web["name"]):
+        return None
+    addr = web["street_address"]
+    hit = (find_address(addr, center) or geocode_near(addr, center) if center else None) \
+        or geocode("%s, %s" % (addr, city))
+    if not hit or (center and km(hit, center) > NEAR_CITY_KM):
+        return None
+    named = find_by_name(place, hit, radius_m=300)  # the place itself on the map, if it is there
+    if named:
+        return dict(named, found_via="web")
+    return {"name": web["name"], "lat": hit["lat"], "lon": hit["lon"], "address": addr, "found_as": web["name"],
+            "display": "%s, %s" % (web["name"], addr), "found_via": "web"}
+
+
 def find_start(place, city, city_center_fallback=True):
     """Locate the starting place, trying several spellings. A match far from the named city
     (a geocoder can drop the city: "St Stephens Catholic Church, Portland" -> Skipton, England)
@@ -267,8 +425,13 @@ def find_start(place, city, city_center_fallback=True):
             center = None
     far = None
     if place:
+        name, near = split_place(place)
+        if center and not near:  # the map data around the city first: it has every named place
+            hit = find_by_name(place, center)
+            if hit:
+                return hit
         for v in spellings(place):
-            hit = geocode("%s, %s" % (v, city) if city else v)
+            hit = (geocode_near(v, center) if center else None) or geocode("%s, %s" % (v, city) if city else v)
             if not hit or not same_place(v, hit.get("name")):
                 continue  # nothing, or a different place with a similar name
             found = dict(hit, name=hit["name"] if hit.get("name") and not re.match(r"^\s*\d", v) else v,
@@ -277,10 +440,13 @@ def find_start(place, city, city_center_fallback=True):
                 far = far or found
                 continue
             return found
-        name, near = split_place(place)
         if near:  # "X at 41st and Salmon": find X, checked against (or replaced by) the cross streets
             hit = find_start_near(name, near, city, center)
             if hit and not (center and km(hit, center) > NEAR_CITY_KM):
+                return hit
+        if city and not near:  # not in the map data under that name: look it up on the web
+            hit = find_on_web(place, city, center)
+            if hit:
                 return hit
         if far:
             return far
