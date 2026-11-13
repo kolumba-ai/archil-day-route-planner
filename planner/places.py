@@ -336,6 +336,8 @@ WEB_SCHEMA = {"type": "object", "additionalProperties": False,
               "properties": {"found": {"type": "boolean"}, "name": {"type": "string"},
                              "street_address": {"type": "string"}}}
 WEB_SYSTEM = ("Find the street address of the place the user names, in the city they name. Search the web. "
+              "The place may be given with cross streets or a neighborhood (\"X at 41st and Salmon\"): use them to "
+              "pick the right one. "
               "Give the place's official name and its street address (number and street, no city). "
               "Answer found=false if you can't confirm the place exists in that city.")
 
@@ -389,21 +391,66 @@ def find_address(addr, center, radius_m=SEARCH_KM * 1000):
     return min(spots, key=lambda p: km(p, center)) if spots else None
 
 
+def find_addresses(addrs, center, radius_m=SEARCH_KM * 1000):
+    """Many street addresses at once, in one map query: {address: {"lat", "lon"}} for those the map
+    data has (house number and street, direction checked). Unparsed or missing ones are left out."""
+    from .routes import km
+    want = {}
+    for a in addrs:
+        m = re.match(r"^\s*(\d+[A-Za-z]?)\s+(.+)$", a or "")
+        if m:
+            want[a] = (m.group(1), m.group(2).split(",")[0].strip())
+    if not want or not center:
+        return {}
+    nums = sorted({n for n, _ in want.values()})
+    q = ('[out:json][timeout:40];nwr["addr:housenumber"~"^({n})$"]["addr:street"](around:{r},{la:.5f},{lo:.5f});'
+         'out center tags;').format(n="|".join(re.escape(n) for n in nums), r=int(radius_m), la=center["lat"],
+                                    lo=center["lon"])
+    els = _cached("addrs:%s:%.3f,%.3f:%d" % (",".join(nums), center["lat"], center["lon"], radius_m),
+                  lambda: _overpass(q), ttl=30 * 24 * 3600) or []
+    out = {}
+    for a, (num, street) in want.items():
+        rx = _street_rx(street)
+        d = re.match(r"(?i)^(se|sw|ne|nw|n|s|e|w|southeast|southwest|northeast|northwest|north|south|east|west)\.?\s", street)
+        spots = []
+        for e in els:
+            t = e.get("tags") or {}
+            st = t.get("addr:street", "")
+            if t.get("addr:housenumber") != num or not rx or not re.search(rx, st, re.I):
+                continue
+            if d and not re.match(r"(?i)^(%s|%s)\b" % (_DIRS.get(d.group(1).lower(), d.group(1)), d.group(1)), st):
+                continue
+            pos = e.get("center") or e
+            if "lat" in pos:
+                spots.append({"lat": pos["lat"], "lon": pos["lon"]})
+        if spots:
+            out[a] = min(spots, key=lambda p: km(p, center))
+    return out
+
+
+_DIRS = {"se": "southeast", "sw": "southwest", "ne": "northeast", "nw": "northwest", "n": "north", "s": "south",
+         "e": "east", "w": "west"}
+
+
 def find_on_web(place, city, center):
-    """The place's address from a web search, placed with the map data: the address must be on
-    the map within reach of the city, and the name found must be the one asked for."""
+    """The place and its address from a web search (current, unlike the map data), then its
+    coordinates from the map: the address's building or the place itself, within reach of the
+    city. The name found must be the one asked for."""
     from .routes import km
     try:
         web = lookup_on_web(place, city)
     except Exception:
         return None
-    if not web or not same_place(place, web["name"]):
+    if not web or not same_place(split_place(place)[0], web["name"]):
         return None
     addr = web["street_address"]
     hit = (find_address(addr, center) or geocode_near(addr, center) if center else None) \
         or geocode("%s, %s" % (addr, city))
     if not hit or (center and km(hit, center) > NEAR_CITY_KM):
         return None
+    if re.match(r"^\s*\d", place):  # a street address: keep it as typed, placed on the map
+        return {"name": place, "lat": hit["lat"], "lon": hit["lon"], "address": addr, "found_as": web["name"],
+                "display": "%s, %s" % (place, addr), "found_via": "web"}
     named = find_by_name(place, hit, radius_m=300)  # the place itself on the map, if it is there
     if named:
         return dict(named, found_via="web")
@@ -426,7 +473,11 @@ def find_start(place, city, city_center_fallback=True):
     far = None
     if place:
         name, near = split_place(place)
-        if center and not near:  # the map data around the city first: it has every named place
+        if city:  # the web first (the map can be out of date); the map only places the address found
+            hit = find_on_web(place, city, center)
+            if hit:
+                return hit
+        if center and not near:  # no web answer: the place by name in the map data around the city
             hit = find_by_name(place, center)
             if hit:
                 return hit
@@ -443,10 +494,6 @@ def find_start(place, city, city_center_fallback=True):
         if near:  # "X at 41st and Salmon": find X, checked against (or replaced by) the cross streets
             hit = find_start_near(name, near, city, center)
             if hit and not (center and km(hit, center) > NEAR_CITY_KM):
-                return hit
-        if city and not near:  # not in the map data under that name: look it up on the web
-            hit = find_on_web(place, city, center)
-            if hit:
                 return hit
         if far:
             return far
@@ -498,6 +545,9 @@ OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private
 _overpass_lock = threading.Lock()
 
 
+_ch_slots = threading.BoundedSemaphore(3)  # at most 3 overpass.ch queries at a time
+
+
 def _overpass(query):
     """Run an Overpass query, with retries and a second public server. The free servers
     refuse bursts, so calls from this process go one at a time."""
@@ -505,11 +555,14 @@ def _overpass(query):
     last = None
     key = _ch_key()
     if key:  # overpass.ch answers in about a second; the public servers are the fallback
-        try:
-            return _http(OVERPASS_CH + "/interpreter", data=data, timeout=40,
-                         extra_headers={"X-API-Key": key}).get("elements", [])
-        except Exception as e:
-            last = e
+        for attempt in range(3):  # it drops a connection now and then under parallel load: retry
+            try:
+                with _ch_slots:
+                    return _http(OVERPASS_CH + "/interpreter", data=data, timeout=40,
+                                 extra_headers={"X-API-Key": key}).get("elements", [])
+            except Exception as e:
+                last = e
+                time.sleep(1 + 2 * attempt)
     with _overpass_lock:
         for attempt in range(4):
             url = OVERPASS[attempt % len(OVERPASS)]
@@ -733,6 +786,20 @@ def conditions(center, day_name):
 # ---------------------------------------------------------------- strolls
 
 STROLL_KM = 1.2  # how much of the street the stroll covers
+
+
+def find_area(where, city, center):
+    """Where "near Hawthorne" is: the liveliest stretch of a street by that name near the start
+    (its middle, 800 m around it), else the neighborhood or landmark on the map near the city.
+    Returns {"lat", "lon", "radius_m", "name"} or None."""
+    st = find_stroll(where, center, radius_m=8000)
+    if st and st.get("shops", 0) >= 5:
+        return {"lat": (st["lat"] + st["end_lat"]) / 2, "lon": (st["lon"] + st["end_lon"]) / 2,
+                "radius_m": 800, "name": st["name"].replace("Stroll along ", "")}
+    hit = geocode_near("%s, %s" % (where, city), center) or geocode_near(where, center)
+    if hit:
+        return {"lat": hit["lat"], "lon": hit["lon"], "radius_m": 800, "name": hit["name"]}
+    return None
 
 
 def find_stroll(street, center, radius_m=5000):

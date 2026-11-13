@@ -31,8 +31,9 @@ Rules:
 - "start_time" / "end_time": 24-hour "HH:MM". end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
 - "max_walk_km": the walking limit in kilometers (convert miles: x 1.609). 0 if none.
 - "day": the weekday, e.g. "Saturday". Empty string if none.
-- "stops": the kinds of places to visit, in order, from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
+- "stops": the kinds of places to visit, in the exact order the message names them (the day follows that order), from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
 - "stroll_street": for "a stroll down Hawthorne Street" / "walk along Valencia", the street name as written ("Hawthorne Street"); add "stroll" to "stops" in its place. Empty string if none.
+- "stop_near": a stop the message ties to a street, neighborhood or landmark ("burritos near Hawthorne" -> {"stop": "food", "near": "Hawthorne"}; "coffee on Alberta Street" -> {"stop": "cafe", "near": "Alberta Street"}; "a park in Sellwood" -> {"stop": "park", "near": "Sellwood"}), the place as written. The stop must be in "stops". Empty if none. These are planned, so never put them in "not_supported".
 - "not_supported": things the message asks for that none of the stop types or fields above can hold (e.g. "see the cherry blossoms", "a boat tour"), each as a short phrase from the message. Empty if everything fits.
 - "sunset_stop": the stop the message wants at sunset ("riverside at sunset" -> "waterfront", "beach at sunset" -> "beach"). Must be one of "stops". Empty string if the message doesn't tie a stop to sunset. The starting place is not a stop. In the order mentioned.
 - "avoid_hills" / "prefer_hills": true only if the message says so ("avoid hills", "flat" / "I want hills", "a good climb").
@@ -54,6 +55,10 @@ SCHEMA = {
         "stops": {"type": "array", "items": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront", "stroll"]}},
         "sunset_stop": {"type": "string", "enum": ["", "cafe", "park", "museum", "food", "beach", "waterfront", "stroll"]},
         "stroll_street": {"type": "string"},
+        "stop_near": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                  "required": ["stop", "near"],
+                                                  "properties": {"stop": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront"]},
+                                                                 "near": {"type": "string"}}}},
         "not_supported": {"type": "array", "items": {"type": "string"}},
         "avoid_hills": {"type": "boolean"},
         "prefer_hills": {"type": "boolean"},
@@ -64,7 +69,7 @@ SCHEMA = {
         "return_to_start": {"type": "boolean"},
     },
     "required": ["city", "start_place", "start_time", "end_time", "max_walk_km", "day", "stops",
-                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "not_supported", "cuisines", "food_truck", "return_to_start"],
+                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "stop_near", "not_supported", "cuisines", "food_truck", "return_to_start"],
     "additionalProperties": False,
 }
 
@@ -121,7 +126,7 @@ def blank(text):
     return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
             "end_min": None, "cuisines": [], "food_truck": False, "return_to_start": False, "max_walk_km": None,
             "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
-            "sunset_stop": None, "stroll_street": None, "not_supported": [], "with": [], "dog": False}
+            "sunset_stop": None, "stroll_street": None, "stop_near": {}, "not_supported": [], "with": [], "dog": False}
 
 
 def ask_openai(system, text, schema, name="fields", timeout=20):
@@ -214,7 +219,16 @@ def merge(text, ai, base, who="claude"):
     stops = [s for s in ai.get("stops") or [] if s in ("cafe", "park", "museum", "food", "beach", "waterfront", "stroll")]
     if not out.get("stroll_street"):
         stops = [s for s in stops if s != "stroll"]  # a stroll needs its street
-    take("not_supported", [x.strip() for x in ai.get("not_supported") or [] if x.strip()][:5])
+    near = {}
+    for item in ai.get("stop_near") or []:
+        where = (item.get("near") or "").strip()
+        if item.get("stop") in stops and where and _norm(where) in msg:
+            near.setdefault(item["stop"], where)
+    if near:
+        take("stop_near", near)
+    covered = [_norm(w) for w in near.values()]
+    take("not_supported", [x.strip() for x in ai.get("not_supported") or [] if x.strip()
+                           and not any(c and c in _norm(x) for c in covered)][:5])  # planned after all
     if stops:
         take("categories", list(dict.fromkeys(stops)))
         sun = ai.get("sunset_stop") or ""

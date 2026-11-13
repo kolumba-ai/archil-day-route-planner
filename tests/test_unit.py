@@ -1,5 +1,6 @@
 """Unit tests A, B, D. Fast, no disk, no network. Method names start with the test ID."""
 import copy
+import json
 import os
 import unittest
 
@@ -631,6 +632,10 @@ class ConfirmFirstTests(unittest.TestCase):
         self.assertEqual(r["sunset_stop"], "waterfront")
         self.assertEqual(request.parse("coffee, a museum, burritos, beach at sunset")["sunset_stop"], "beach")
         self.assertEqual(routes.orders(["waterfront", "cafe"], "waterfront"), [("cafe", "waterfront")])
+        # Otherwise the stops are visited in the order asked: coffee, a park, then lunch, never lunch first.
+        self.assertEqual(routes.orders(["cafe", "park", "food"], None), [("cafe", "park", "food")])
+        self.assertEqual(request.parse("Plan Saturday in Testville: coffee, a park and a restaurant for lunch")
+                         ["categories"], ["cafe", "park", "food"])
 
     def test_N2_nothing_sent_before_yes(self):
         import server
@@ -858,6 +863,62 @@ class StartAndStrollTests(unittest.TestCase):
         with mock.patch.object(places, "lookup_on_web", lambda p, c: web), \
                 mock.patch.object(places, "find_address", lambda a, c: {"lat": 47.6, "lon": -122.3}):  # Seattle
             self.assertIsNone(places.find_on_web("Common Grounds Coffeehouse", "Portland Oregon", center))
+
+    def test_P7_stop_near_a_street_is_searched_there(self):
+        """"burritos for lunch near Hawthorne": the food stop is looked for around Hawthorne, not the start,
+        and the summary says so instead of leaving it out."""
+        from unittest import mock
+        from planner import places, search
+        text = ("Plan Saturday with Ana and Biscuit starting from ST Stephens Catholic Church in Portland, "
+                "visiting a cafe, a park, and burritos for lunch near Hawthorne")
+        r = request.parse(text)
+        self.assertEqual(r["stop_near"], {"food": "Hawthorne"})
+        said = planner.understood(r, {"name": "Saint Stephen Catholic Church", "lat": 45.5145, "lon": -122.6197},
+                                  "Portland")
+        self.assertIn("food near Hawthorne", said)
+        self.assertNotIn("can't plan", said)
+        seen = {}
+        area = {"lat": 45.5121, "lon": -122.6308, "radius_m": 800, "name": "Southeast Hawthorne Boulevard"}
+        with mock.patch.object(places, "find_area", lambda w, c, s: area), \
+                mock.patch.object(places, "find_venues", lambda cat, center, radius, **kw: seen.update(
+                    center=center, radius=radius) or []):
+            search.search_city("food", {"start": {"lat": 45.5145, "lon": -122.6197}, "city": "Portland",
+                                        "request": r, "limits": {"max_km": 6.4}}, "")
+        self.assertEqual((seen["center"]["lat"], seen["radius"]), (45.5121, 800))
+
+    def test_P8_venues_come_from_the_web_and_are_placed_on_the_map(self):
+        """Venues from Claude's web search (current hours, closures, dog rules), placed by address on the map;
+        closed that day, off the map or out of reach are left out; midnight closing stays open late."""
+        from unittest import mock
+        from types import SimpleNamespace as NS
+        from planner import places, search
+        def place(name, addr, **kw):
+            v = {"name": name, "street_address": addr, "open_that_day": True, "open": "11:00", "close": "21:00",
+                 "dogs": "patio", "dogs_known": True, "gluten_free": "yes", "vegetarian_ok": True,
+                 "cuisine": ["mexican"], "food_truck": False, "tags": ["noisy", "hours unconfirmed"], "source": "u"}
+            v.update(kw)
+            return v
+        found = [place("Near Taqueria", "3832 SE Hawthorne Blvd", close="00:00"),
+                 place("Closed Saturdays", "3900 SE Hawthorne Blvd", open_that_day=False),
+                 place("Far Cantina", "100 Far Rd"), place("Nowhere Grill", "1 Lost Ln")]
+        reply = NS(stop_reason="end_turn", content=[NS(type="text", text=json.dumps({"places": found}))])
+        client = NS(messages=NS(create=lambda **kw: reply))
+        start = {"name": "Saint Stephen Catholic Church", "lat": 45.5145, "lon": -122.6197}
+        spots = {"3832 SE Hawthorne Blvd": {"lat": 45.5119, "lon": -122.6237}, "100 Far Rd": {"lat": 45.70, "lon": -122.6}}
+        ctx = {"start": start, "city": "Portland", "request": {"day": "Saturday", "cuisines": ["mexican"]},
+               "limits": {"max_km": 6.4, "dog": True, "diets": ["gluten_free"], "avoid_foods": []}}
+        with mock.patch("anthropic.Anthropic", lambda **kw: client), \
+                mock.patch.object(places, "find_addresses", lambda a, c, radius_m=0: spots), \
+                mock.patch.object(places, "find_by_name", lambda *a, **k: None), \
+                mock.patch.object(places, "geocode_near", lambda *a, **k: None), \
+                mock.patch.object(search, "web_venues_available", lambda: True):
+            venues, source = search.search_city("food", ctx, "")
+        self.assertEqual([v["name"] for v in venues], ["Near Taqueria"])
+        v = venues[0]
+        self.assertEqual((v["close"], v["gluten_free_ok"], v["address"]), ("23:59", True, "3832 SE Hawthorne Blvd"))
+        self.assertIn("noisy", v["tags"])
+        self.assertNotIn("hours unconfirmed", v["tags"])
+        self.assertIn("web search", source)
 
 
 if __name__ == "__main__":

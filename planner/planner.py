@@ -171,7 +171,9 @@ def place_name(p):
 def stop_label(c, req):
     if c == "stroll" and req.get("stroll_street"):
         return "a stroll along %s" % req["stroll_street"]
-    return request_mod.LABELS.get(c, c)
+    label = request_mod.LABELS.get(c, c)
+    near = (req.get("stop_near") or {}).get(c)
+    return "%s near %s" % (label, near) if near else label
 
 
 def understood(req, start, city):

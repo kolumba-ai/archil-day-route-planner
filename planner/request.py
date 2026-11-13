@@ -29,6 +29,19 @@ STROLL = re.compile(r"\b(?:stroll|wander|walk)\s+(?:down|along|on|up|through)\s+
 SUNSET = r"\b(?:at|for|by|around|watch(?:ing)?(?: the)?|see(?: the)?|catch(?: the)?)?\s*(?:the\s+)?sunset\b"
 DEFAULT_CATEGORIES = ["cafe", "museum", "food", "beach"]  # the San Francisco demo's day
 OUTDOOR = ("beach", "waterfront", "park")  # stops that can be timed for sunset
+NEAR_STOP = re.compile(r"\b(coffee|cafe|park|museum|burritos?|tacos?|lunch|dinner|food|beach)\s+(?:for \w+\s+)?"
+                       r"(?:near|on|in|around)\s+((?:[A-Z][\w']+)(?:\s+(?:[A-Z][\w']+|Street|St|Avenue|Ave|Blvd|Boulevard|Road))*)")
+NEAR_CAT = {"coffee": "cafe", "cafe": "cafe", "park": "park", "museum": "museum", "beach": "beach"}
+
+
+def stop_near(text):
+    """ "burritos for lunch near Hawthorne" -> {"food": "Hawthorne"} (the rule reader, for tests)."""
+    out = {}
+    for m in NEAR_STOP.finditer(text):
+        out.setdefault(NEAR_CAT.get(m.group(1).lower(), "food"), m.group(2))
+    return out
+
+
 LABELS = {"cafe": "coffee", "park": "a park", "museum": "a museum", "food": "food", "beach": "a beach",
           "waterfront": "the riverside / waterfront", "stroll": "a stroll"}
 
@@ -157,6 +170,7 @@ def parse(text):
         "categories": categories,
         "sunset_stop": sunset_stop,  # the stop timed for sunset, or None
         "stroll_street": (STROLL.search(text).group(1).strip() if STROLL.search(text) else None),
+        "stop_near": stop_near(text),
         "with": ["ana"] if re.search(r"\bana\b", low) else [],
         "dog": bool(re.search(r"\b(dog|biscuit)\b", low)),
     }

@@ -346,6 +346,10 @@ def score_itinerary(it, stops, ctx, sunset):
             tags = v.get("tags", [])
             if "crowds" in tags and dislikes(p, "crowd"):
                 crowd += 0.08
+            if "noisy" in tags and dislikes(p, "noisy"):  # web reviews say so: "noisy restaurants"
+                crowd += 0.08
+            if "small_indoor" in tags and dislikes(p, "indoor"):  # "tight indoor spaces"
+                crowd += 0.08
             if cat == "museum":
                 if v.get("kind") == "museum":
                     if lim["dog"] and lim["dog_owner"] == p["id"]:
@@ -458,15 +462,10 @@ def branch_specs(candidates, categories):
 
 
 def orders(categories, last="beach"):
-    """Visiting orders worth trying: the sunset stop goes last, coffee before food."""
-    out = []
-    for perm in itertools.permutations(categories):
-        if last in perm and perm[-1] != last:
-            continue
-        if "cafe" in perm and "food" in perm and perm.index("cafe") > perm.index("food"):
-            continue
-        out.append(perm)
-    return out
+    """The order the person asked for, kept as is. The one exception is a stop they want at
+    sunset ("riverside at sunset"), which can only come last."""
+    order = [c for c in categories if c != last] + ([last] if last in categories else [])
+    return [tuple(order)]
 
 
 def route_branch(fixed, candidates, ctx, keep=4):
