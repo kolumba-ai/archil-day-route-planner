@@ -18,6 +18,17 @@ WEB = os.path.join(os.path.dirname(__file__), "web")
 API_VERSION = 3  # bump when the page needs new endpoints; the page checks it (web/index.html)
 PORT = int(os.environ.get("PORT", "8765"))
 
+def plan_facts(p):
+    """One plan in a line, so Claude can answer questions about it ("which one walks least?")."""
+    try:
+        stops = " -> ".join("%s (%s)" % (s.get("name"), s.get("category")) for s in p.get("stops", []))
+        return "%s: leave %s, back %s, walk %.1f km, climb %d m; %s%s" % (
+            p.get("name") or "plan", p.get("depart"), p.get("end"), p.get("walk_km", 0), p.get("climb_m", 0), stops,
+            ("; notes: " + "; ".join(p["notes"][:3])) if p.get("notes") else "")
+    except Exception:
+        return p.get("name") or "plan"
+
+
 def interpret(run, who, text):
     """Turn a typed message into an action: a new plan, a pick (1, 2 or 3), or a hint.
 
@@ -47,6 +58,25 @@ def interpret(run, who, text):
         if re.fullmatch(r"(no|nope|n|decline(d)?|can'?t|cannot|not this time|pass|👎)[.! ]*", low):
             return "share", False
         return "relay", text.strip()
+    if run is not None and not re.fullmatch(r"(?:plan\s*)?#?\s*[1-9]\s*[.!]?", low):
+        # Anything but a bare number: Claude reads it in context (a pick in words, a new or changed
+        # request, a message for the other person, a question), so the agent never answers a request
+        # with "just reply with the plan number".
+        plans = run.state.get("plans") or []
+        earlier = (run.state.get("req") or {}).get("text") or run.state.get("original") or ""
+        ai = understand.read_turn(text, earlier, [plan_facts(p) for p in plans], who)
+        if ai:
+            intent = ai.get("intent")
+            if intent == "pick" and plans and not run.state.get("decided") and 1 <= int(ai.get("plan") or 0) <= len(plans):
+                return "vote", int(ai["plan"])
+            if intent == "new_plan":
+                if who == "Me":
+                    return "plan", ai["request"].strip()
+                return "relay", text.strip()  # Ana suggests a change: her friend decides
+            if intent == "message":
+                return "relay", text.strip()
+            if intent == "question" and (ai.get("reply") or "").strip():
+                return "hint", ai["reply"].strip()
     if who == "Me" and (not has_plans or fresh):
         return "plan", text
     if not has_plans:

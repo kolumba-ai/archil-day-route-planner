@@ -34,6 +34,7 @@ Rules:
 - "stops": the kinds of places to visit, in the exact order the message names them (the day follows that order), from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
 - "stroll_street": for "a stroll down Hawthorne Street" / "walk along Valencia", the street name as written ("Hawthorne Street"); add "stroll" to "stops" in its place. Empty string if none.
 - "stop_near": a stop the message ties to a street, neighborhood or landmark ("burritos near Hawthorne" -> {"stop": "food", "near": "Hawthorne"}; "coffee on Alberta Street" -> {"stop": "cafe", "near": "Alberta Street"}; "a park in Sellwood" -> {"stop": "park", "near": "Sellwood"}), the place as written. The stop must be in "stops". Empty if none. These are planned, so never put them in "not_supported".
+- "named_stops": a stop the message names as a specific place by its proper name (not a description like "a nice restaurant") ("then go to Mt Tabor Park" -> {"stop": "park", "name": "Mt Tabor Park"}; "lunch at Pok Pok" -> {"stop": "food", "name": "Pok Pok"}), with the stop also in "stops". Empty if none. These are planned, so never put them in "not_supported".
 - "not_supported": things the message asks for that none of the stop types or fields above can hold (e.g. "see the cherry blossoms", "a boat tour"), each as a short phrase from the message. Empty if everything fits.
 - "sunset_stop": the stop the message wants at sunset ("riverside at sunset" -> "waterfront", "beach at sunset" -> "beach"). Must be one of "stops". Empty string if the message doesn't tie a stop to sunset. The starting place is not a stop. In the order mentioned.
 - "avoid_hills" / "prefer_hills": true only if the message says so ("avoid hills", "flat" / "I want hills", "a good climb").
@@ -59,6 +60,10 @@ SCHEMA = {
                                                   "required": ["stop", "near"],
                                                   "properties": {"stop": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront"]},
                                                                  "near": {"type": "string"}}}},
+        "named_stops": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                    "required": ["stop", "name"],
+                                                    "properties": {"stop": {"type": "string", "enum": ["cafe", "park", "museum", "food", "beach", "waterfront"]},
+                                                                   "name": {"type": "string"}}}},
         "not_supported": {"type": "array", "items": {"type": "string"}},
         "avoid_hills": {"type": "boolean"},
         "prefer_hills": {"type": "boolean"},
@@ -69,7 +74,7 @@ SCHEMA = {
         "return_to_start": {"type": "boolean"},
     },
     "required": ["city", "start_place", "start_time", "end_time", "max_walk_km", "day", "stops",
-                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "stop_near", "not_supported", "cuisines", "food_truck", "return_to_start"],
+                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "stop_near", "named_stops", "not_supported", "cuisines", "food_truck", "return_to_start"],
     "additionalProperties": False,
 }
 
@@ -126,7 +131,7 @@ def blank(text):
     return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
             "end_min": None, "cuisines": [], "food_truck": False, "return_to_start": False, "max_walk_km": None,
             "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
-            "sunset_stop": None, "stroll_street": None, "stop_near": {}, "not_supported": [], "with": [], "dog": False}
+            "sunset_stop": None, "stroll_street": None, "stop_near": {}, "named_stops": {}, "not_supported": [], "with": [], "dog": False}
 
 
 def ask_openai(system, text, schema, name="fields", timeout=20):
@@ -226,7 +231,16 @@ def merge(text, ai, base, who="claude"):
             near.setdefault(item["stop"], where)
     if near:
         take("stop_near", near)
-    covered = [_norm(w) for w in near.values()]
+    named = {}
+    for item in ai.get("named_stops") or []:
+        name = (item.get("name") or "").strip()
+        # A proper name ("Mt Tabor Park", "Pok Pok"), not a description ("a nice restaurant")
+        proper = re.search(r"\b[A-Z0-9][\w'’.]*", re.sub(r"(?i)^(a|an|the|some)\s+", "", name))
+        if item.get("stop") in stops and name and proper and _norm(name) in msg:
+            named.setdefault(item["stop"], name)
+    if named:
+        take("named_stops", named)
+    covered = [_norm(w) for w in list(near.values()) + list(named.values())]
     take("not_supported", [x.strip() for x in ai.get("not_supported") or [] if x.strip()
                            and not any(c and c in _norm(x) for c in covered)][:5])  # planned after all
     if stops:
@@ -301,4 +315,39 @@ def read_reply(text, asked):
     place = (ai.get("start_place") or "").strip()
     if place and _norm(place) not in _norm(text):
         ai["start_place"] = ""
+    return ai
+
+
+TURN_SYSTEM = """You read one chat message sent to a day-planning agent, given what came before. Decide what the person wants:
+- "pick": they choose one of the plans offered; "plan" is its number ("the second one" -> 2, "let's do the Laurelhurst one" -> the plan with that name).
+- "new_plan": they ask for a different or changed day out ("start again, ...", "instead let's ...", "make it a museum instead", "can we skip the park?", a whole new request). Write "request": one complete, standalone request in their words that the planner can read on its own. Fill in whatever they refer to from the earlier request with its value ("the same place" -> the earlier start place, "same people" -> who was coming) and keep the earlier day, city, people and dog unless the message changes them. Keep the stops in the order they give.
+- "message": something meant for the other person in the group (a question or comment to them).
+- "question": a question to the agent about the plans; put a short, helpful answer in "reply" using only what you were told.
+Fill unused fields with 0 or an empty string."""
+
+TURN_SCHEMA = {"type": "object", "additionalProperties": False,
+               "required": ["intent", "plan", "request", "reply"],
+               "properties": {"intent": {"type": "string", "enum": ["pick", "new_plan", "message", "question"]},
+                              "plan": {"type": "integer"}, "request": {"type": "string"}, "reply": {"type": "string"}}}
+
+
+def read_turn(text, earlier="", plans=(), who="Me"):
+    """What a chat message means in context: a plan pick, a new or changed request (rewritten to
+    stand on its own), a message for the other person, or a question. None without a model."""
+    model = provider()
+    if model == "rules" or rules_mode():
+        return None
+    ctx = ["Sender: %s" % ("the organizer" if who == "Me" else "Ana, the invited friend")]
+    if earlier:
+        ctx.append("Earlier request: %s" % earlier)
+    if plans:
+        ctx.append("Plans offered: " + "; ".join("%d. %s" % (i + 1, p) for i, p in enumerate(plans)))
+    try:
+        ai = ask_model(model, TURN_SYSTEM, "\n".join(ctx) + "\nTheir message: %s" % text, TURN_SCHEMA, "turn",
+                       timeout=20)
+    except Exception as e:
+        print("%s couldn't read the message: %r" % (LABEL[model], e))
+        return None
+    if ai.get("intent") == "new_plan" and not (ai.get("request") or "").strip():
+        ai["request"] = text
     return ai

@@ -655,6 +655,40 @@ class ConfirmFirstTests(unittest.TestCase):
         self.assertIn("walks up to 6.4 km", brief)
         self.assertIn("gluten-free", brief)
 
+    def test_N4_any_reply_is_read_in_context(self):
+        """After the plans are shown, a new request is planned (not "just reply with the plan number"),
+        a pick in words is a vote, a note for the other person is relayed, and a question is answered."""
+        import server
+        from unittest import mock
+        from planner import understand
+        run = planner.Run()
+        run.state.update(req={"text": "Plan Saturday with Ana starting from St Stephens Catholic Church in Portland"},
+                         plans=[{"name": "A", "stops": [], "walk_km": 3.1}, {"name": "B", "stops": [], "walk_km": 2.0}])
+        replies = {"start again": {"intent": "new_plan", "plan": 0, "reply": "",
+                                   "request": "Plan Saturday with Ana starting from St Stephens Catholic Church in "
+                                              "Portland: coffee, then Mt Tabor Park, then lunch"},
+                   "the B one": {"intent": "pick", "plan": 2, "request": "", "reply": ""},
+                   "see you there": {"intent": "message", "plan": 0, "request": "", "reply": ""},
+                   "which walks least?": {"intent": "question", "plan": 0, "request": "", "reply": "Plan B, 2.0 km."}}
+        with mock.patch.object(understand, "read_turn", lambda t, e, p, w: replies[t]):
+            self.assertEqual(server.interpret(run, "Me", "start again")[0], "plan")
+            self.assertIn("Mt Tabor Park", server.interpret(run, "Me", "start again")[1])
+            self.assertEqual(server.interpret(run, "Me", "the B one"), ("vote", 2))
+            self.assertEqual(server.interpret(run, "Ana", "see you there"), ("relay", "see you there"))
+            self.assertEqual(server.interpret(run, "Me", "which walks least?"), ("hint", "Plan B, 2.0 km."))
+        self.assertEqual(server.interpret(run, "Me", "2"), ("vote", 2))  # a bare number needs no model
+
+    def test_N5_a_named_stop_is_that_place(self):
+        from planner import understand
+        text = "Plan Saturday in Portland from Powell's Books: coffee, then go to Mt Tabor Park, then lunch"
+        ai = {"stops": ["cafe", "park", "food"], "named_stops": [{"stop": "park", "name": "Mt Tabor Park"},
+                                                                 {"stop": "museum", "name": "Mt Tabor Park"}]}
+        r = understand.merge(text, ai, understand.blank(text))
+        self.assertEqual(r["named_stops"], {"park": "Mt Tabor Park"})
+        said = planner.understood(dict(r, categories=["cafe", "park", "food"]), {"name": "Powell's", "lat": 45.5, "lon": -122.6},
+                                  "Portland")
+        self.assertIn("🌳 Mt Tabor Park", said)
+
     def test_N2_nothing_sent_before_yes(self):
         import server
         from unittest import mock

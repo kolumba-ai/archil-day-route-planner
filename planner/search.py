@@ -115,6 +115,12 @@ def search_city(category, context, mode):
     day_index = DAYS.index(context["request"].get("day", "Saturday").lower())
     req = context["request"]
     center, radius = context["start"], search_radius_m(context, category)
+    named = (req.get("named_stops") or {}).get(category)
+    if named:  # "then go to Mt Tabor Park": that place, found on the web and placed on the map
+        v = named_venue(category, named, context)
+        if v:
+            return [v], "Claude web search + OpenStreetMap coordinates"
+        print("Couldn't find %s; searching for any %s instead" % (named, category))
     near = (req.get("stop_near") or {}).get(category)
     if mode not in ("osm", "seed", "keenable") and web_venues_available():
         try:  # current places from the web; the map only gives their coordinates
@@ -181,6 +187,31 @@ WEB_VENUE_SYSTEM = (
     "describe it: use \"crowds\" if it is usually crowded, \"noisy\" or \"quiet\", \"outdoor_seating\", "
     "\"views\", \"water\", \"small_indoor\" for a cramped room (single words only). Give the URL you relied on "
     "as source.")
+
+
+def named_venue(category, name, context):
+    """The one place they named for a stop, as a venue: found like the start place (web first,
+    then the map), with the usual hours and dog rules for its kind."""
+    from . import places
+    from .routes import km
+    try:
+        hit = places.find_start(name, context["city"], city_center_fallback=False)
+    except Exception as e:
+        print("Lookup of %s failed: %r" % (name, e))
+        return None
+    if not hit or km(hit, context["start"]) > 30:
+        return None
+    open_, close = places.DEFAULT_HOURS[category]
+    v = {"name": hit.get("name") or name, "lat": hit["lat"], "lon": hit["lon"], "address": hit.get("address", ""),
+         "open": open_, "close": close, "hours_known": False,
+         "dogs": "leash" if category in AREA_STOPS else "patio", "dogs_known": False, "vegetarian_ok": True,
+         "gluten_free_ok": None, "tags": [category, "named"], "cuisine": [], "food_truck": False,
+         "source": "named in the request"}
+    if category == "museum":
+        v["kind"] = "museum"
+    if category in ("beach", "waterfront"):
+        v["area"] = "all"
+    return v
 
 
 def web_venues_available():

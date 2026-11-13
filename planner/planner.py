@@ -172,6 +172,8 @@ def stop_label(c, req):
     if c == "stroll" and req.get("stroll_street"):
         return "a stroll along %s" % req["stroll_street"]
     label = request_mod.LABELS.get(c, c)
+    if (req.get("named_stops") or {}).get(c):
+        return req["named_stops"][c]
     near = (req.get("stop_near") or {}).get(c)
     return "%s near %s" % (label, near) if near else label
 
