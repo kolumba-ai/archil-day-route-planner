@@ -637,6 +637,24 @@ class ConfirmFirstTests(unittest.TestCase):
         self.assertEqual(request.parse("Plan Saturday in Testville: coffee, a park and a restaurant for lunch")
                          ["categories"], ["cafe", "park", "food"])
 
+    def test_N3_anas_answer_reaches_the_callers_phone(self):
+        """Ana answers by button or by typing; the caller's phone hears about it, with her limits."""
+        import server
+        run = planner.Run()
+        run.state["awaiting_share"] = True
+        self.assertEqual(server.interpret(run, "Ana", "Yes!"), ("share", True))
+        self.assertEqual(server.interpret(run, "Ana", "not this time"), ("share", False))
+        self.assertEqual(server.interpret(run, "Ana", "Sure, but I need to be home by 4"),
+                         ("relay", "Sure, but I need to be home by 4"))
+        planner.answer_share(run, True)
+        self.assertTrue(run.share_answer and run.share_event.is_set())
+        run.state["awaiting_share"] = False
+        with self.assertRaises(ValueError):
+            planner.answer_share(run, True)  # nothing waiting any more
+        brief = planner.limits_brief(planner.load_profile("ana"))
+        self.assertIn("walks up to 6.4 km", brief)
+        self.assertIn("gluten-free", brief)
+
     def test_N2_nothing_sent_before_yes(self):
         import server
         from unittest import mock

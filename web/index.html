@@ -197,7 +197,8 @@ async function send(phone, text) {
   const r = await post('/api/say', {run, who: PHONES[phone].who, text});
   if (r.error) problem(phone, r.error);
   else if (r.action === 'plan') follow(r.run, true);
-  else if (r.action === 'hint') bubble(phone, r.text || 'Not understood.', false);
+  else if (r.action === 'hint' || r.action === 'relay') bubble(phone, r.text || 'Not understood.', false);
+  else if (r.action === 'share') document.querySelectorAll('#phone-ana .actions').forEach(a => a.remove());
 }
 
 async function checkServer() {

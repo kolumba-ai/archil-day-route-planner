@@ -40,6 +40,13 @@ def interpret(run, who, text):
         if ai and ai.get("start_place"):
             place = ai["start_place"].rstrip(".!")
         return "plan", "%s. Starting at %s." % (run.state["original"].rstrip(". "), place)
+    if who == "Ana" and run is not None and run.state.get("awaiting_share"):
+        # Ana answers the invitation by typing: yes or no; anything else goes to the caller.
+        if re.fullmatch(r"(yes|yep|yeah|y|ok|okay|sure|accept(ed)?|i'?m in|count me in|sounds good|👍)[.! ]*", low):
+            return "share", True
+        if re.fullmatch(r"(no|nope|n|decline(d)?|can'?t|cannot|not this time|pass|👎)[.! ]*", low):
+            return "share", False
+        return "relay", text.strip()
     if who == "Me" and (not has_plans or fresh):
         return "plan", text
     if not has_plans:
@@ -132,8 +139,10 @@ class Handler(BaseHTTPRequestHandler):
             run = planner.RUNS.get(b.get("run"))
             if not run:
                 return self._json(404, {"error": "unknown run"})
-            run.share_answer = bool(b.get("allow"))
-            run.share_event.set()
+            try:
+                planner.answer_share(run, b.get("allow"))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
             self._json(200, {"ok": True})
         elif url.path == "/api/profile":
             b = self._body()
@@ -165,6 +174,13 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "vote":
                     planner.vote(run, who, arg)
                     return self._json(200, {"action": "vote"})
+                if action == "share":
+                    planner.answer_share(run, arg)
+                    return self._json(200, {"action": "share"})
+                if action == "relay":  # a message for the other person: shown on their phone
+                    run.say("me" if who == "Ana" else "ana", "💬 %s: %s" % ("Ana" if who == "Ana" else "Your friend", arg),
+                            agent=True)
+                    return self._json(200, {"action": "relay", "text": "Sent to %s." % ("your friend" if who == "Ana" else "Ana")})
             except ValueError as e:
                 return self._json(200, {"action": "hint", "text": "I couldn't do that: %s." % e})
             self._json(200, {"action": "hint", "text": arg})

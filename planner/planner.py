@@ -294,7 +294,11 @@ def plan(run, text, confirmed=True):
                  asks=["walking limits", "hills", "diet", "museum tolerance", "weather tolerance", "street crime tolerance"])
         run.say("ana", "Your friend is inviting you to several activities on Saturday, "
                        "taking into account your limits. Accept?", agent=True, ask=True)
+        run.say("me", "📨 Invitation sent to Ana. Waiting for her answer…", agent=True)
+        run.state["awaiting_share"] = True
         run.share_event.wait(timeout=SHARE_TIMEOUT)
+        run.state["awaiting_share"] = False
+        run.emit("share_answered", answer=run.share_answer)
         if run.share_answer is False:
             # Declining the invitation means Ana isn't coming: plan without her.
             run.say("me", "Ana declined the invitation.", agent=True)
@@ -308,6 +312,8 @@ def plan(run, text, confirmed=True):
             else:
                 ana = load_profile("ana")
                 run.say("ana", "Accepted, and sent over your limits.", agent=True)
+                run.say("me", "✅ Ana accepted and shared her limits: %s. Planning now…" % limits_brief(ana),
+                        agent=True)
             summary = {k: ana.get(k, {"crime_tolerance": "low"} if k == "safety" else None)
                        for k in ("id", "name", "kind", "walking", "food", "activities", "weather", "safety")}
             shards.append(summary)
@@ -687,6 +693,36 @@ def finish(run, req, disk, work, chosen):
 # ------------------------------------------------------------------ votes (plans can't be changed)
 
 PHONE = {"Me": "me", "Ana": "ana"}
+
+
+def limits_brief(p):
+    """Ana's shared limits in one line for the caller's phone."""
+    w, f, a = p.get("walking") or {}, p.get("food") or {}, p.get("activities") or {}
+    out = []
+    if w.get("max_km"):
+        out.append("walks up to %g km" % w["max_km"] + (" at %g km/h" % w["pace_kmh"] if w.get("pace_kmh") else ""))
+    if w.get("hills"):
+        out.append("hills %s" % w["hills"])
+    if w.get("rest_every_min"):
+        out.append("rest every %d min" % w["rest_every_min"])
+    if f.get("diet") and f["diet"] != "omnivore":
+        out.append(f["diet"].replace("_", "-"))
+    if f.get("loves"):
+        out.append("loves " + ", ".join(f["loves"]))
+    if a.get("dislikes"):
+        out.append("dislikes " + ", ".join(a["dislikes"]))
+    crime = (p.get("safety") or {}).get("crime_tolerance")
+    if crime:
+        out.append("%s street-crime tolerance" % crime)
+    return "; ".join(out) or "her usual limits"
+
+
+def answer_share(run, allow):
+    """Ana's answer to the invitation, from the buttons or typed on her phone."""
+    if not run or not run.state.get("awaiting_share"):
+        raise ValueError("no invitation is waiting for an answer")
+    run.share_answer = bool(allow)
+    run.share_event.set()
 
 
 def vote(run, who, rank):
