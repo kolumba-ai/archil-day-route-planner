@@ -125,6 +125,7 @@ def climb_m(a, b, ctx=None):
     return total, crossed
 
 
+SAFETY_WEIGHT = 0.03  # off the group score per safety point below 10 (a 2.6/10 plan loses 0.22)
 CRIME_RIDE_PENALTY = 0.1  # off the group score for each ride taken to avoid serious crime
 # What a ride costs the group, in US dollars. Estimates, not quotes: a typical UberX/Lyft
 # standard fare in a US city (base + per km + per minute + booking fee, a minimum fare, a pet
@@ -425,6 +426,10 @@ def score_itinerary(it, stops, ctx, sunset):
                       if lg.get("avoids"))
     it["crime_rides"] = crime_rides
     group -= CRIME_RIDE_PENALTY * crime_rides
+    # Safety index, 0 (totally unsafe) to 10 (totally safe): each point below 10 costs SAFETY_WEIGHT.
+    it["safety"] = crime.safety(ctx.get("crime"), it)
+    if it["safety"] is not None:
+        group -= SAFETY_WEIGHT * (10 - it["safety"])
     # Rides cost money: the more a plan spends on Uber/Lyft/taxis (and buses), the lower it ranks.
     group -= RIDE_COST_WEIGHT * it.get("ride_cost", 0)
     if lim.get("prefer_hills"):  # they asked for hills: climbing is a goal, up to HILL_BONUS

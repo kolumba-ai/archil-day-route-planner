@@ -345,6 +345,11 @@ function scoreText(p) {
 function renderPlans() {
   const pills = $('map-pills'); pills.innerHTML = '';
   if (!plans.length) { pills.innerHTML = '<span class="empty" style="padding:0">' + (run ? 'Planning…' : 'Send a message to start.') + '</span>'; }
+  // Calories for a typical 70 kg adult (each phone shows its owner's own); safety 0-10 from the
+  // past year of street crime on the blocks walked and at the stops (planner/crime.py safety).
+  const kcalText = p => p.kcal_typical != null ? ' · 🔥 ≈' + p.kcal_typical.toLocaleString() + ' kcal' : '';
+  const safetyText = p => p.safety != null ? ' · <span title="0 = totally unsafe, 10 = totally safe: past year of street crime on the blocks walked and the stops, at that hour; rides count as safe">🛡️ safety ' +
+      p.safety.toFixed(1) + '/10</span>' : '';
   plans.forEach((p, i) => {
     const b = document.createElement('button'); b.className = 'pill' + (i === selected ? ' on' : '');
     b.textContent = p.rank + '. ' + (p.name || 'Plan ' + p.rank) + (decided === p.rank ? ' ✓' : '');
@@ -352,7 +357,7 @@ function renderPlans() {
   });
   if (plans[selected]) {
     const p = plans[selected], s = document.createElement('span'); s.className = 'badge';
-    s.innerHTML = p.travel_min + ' min getting around' + (p.ride_cost ? ' · 💵 ~$' + p.ride_cost + ' rides' : '') + ' · ' + scoreText(p) + ' ' + voteChips(p.rank) +
+    s.innerHTML = p.travel_min + ' min getting around' + kcalText(p) + safetyText(p) + (p.ride_cost ? ' · 💵 ~$' + p.ride_cost + ' rides' : '') + ' · ' + scoreText(p) + ' ' + voteChips(p.rank) +
       ' · <span style="color:#d9480f">━ walk</span> <span style="color:#5f3dc4">┅ ride</span>';
     pills.appendChild(s);
   }
@@ -362,7 +367,7 @@ function renderPlans() {
   plans.forEach(p => {
     const d = document.createElement('div'); d.className = 'plan' + (decided === p.rank ? ' decided' : '');
     let h = '<h3>Plan ' + p.rank + (p.name ? ' · ' + esc(p.name) : '') + (decided === p.rank ? ' · decided' : '') + ' <span class="sc">' + p.travel_min + ' min getting around · ' +
-            p.walk_km + ' km walking · 👟 ≈' + (p.steps_typical || 0).toLocaleString() + ' steps · ' + p.climb_m + ' m climb' +
+            p.walk_km + ' km walking · 👟 ≈' + (p.steps_typical || 0).toLocaleString() + ' steps' + kcalText(p) + ' · ' + p.climb_m + ' m climb' + safetyText(p) +
             (p.ride_cost ? ' · 💵 ~$' + p.ride_cost + ' rides' : '') + ' · done ' + p.end + ' · score ' + p.group_score.toFixed(2) + '</span>' + voteChips(p.rank) + '</h3>';
     // Timetable: each stop, with a row for getting there in between ("Walk from A to B · 9 min · 0.6 km").
     const LEGNAME = l => l.mode === 'walk' ? '🚶 Walk' : l.bus ? '🚌 Bus ' + esc(l.bus.route) : '🚕 Ride';

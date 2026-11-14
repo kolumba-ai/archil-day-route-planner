@@ -355,6 +355,10 @@ def flat_plan(km=2.0, minutes=25, climb=0):
 class FitnessTests(unittest.TestCase):
     """K: steps, calories, BMI and backpack, and who gets to see them."""
 
+    def test_K0_typical_calories_for_shared_screens(self):
+        self.assertEqual(fitness.typical_kcal(flat_plan()), fitness.estimate(flat_plan(), {"weight_kg": 70})["kcal"])
+        self.assertGreater(fitness.typical_kcal(flat_plan(4.0, 50)), fitness.typical_kcal(flat_plan()))
+
     def test_K1_steps_follow_distance_and_height(self):
         tall, short = {"height_cm": 190}, {"height_cm": 155}
         self.assertAlmostEqual(fitness.estimate(flat_plan(2.0), {"height_cm": 178})["steps"], 2000 / (1.78 * 0.414), delta=10)
@@ -814,6 +818,40 @@ class BusTests(unittest.TestCase):
         it["ride_cost"] = 50
         routes.score_itinerary(it, [("cafe", TOWN["cafe"][0]), ("park", TOWN["park"][0])], c, 17 * 60)
         self.assertAlmostEqual(cheap - it["group_score"], 50 * routes.RIDE_COST_WEIGHT, places=2)
+
+    def test_B7_safety_index(self):
+        """0 (totally unsafe) to 10 (totally safe): walks past, and stops on, blocks with street crime
+        at that hour lower it; rides don't; no crime data means no index."""
+        from planner import crime
+        a, b = {"lat": 37.7500, "lon": -122.4300}, {"lat": 37.7530, "lon": -122.4300}
+        hot = {"t": {"robbery": [3] * 24, "drugs": [5] * 24}}  # 9 robberies + 15 drug offenses in any 3-hour window
+        idx = {"cells": {crime.cell(37.7515, -122.4300): hot}}
+        stop = dict(b, arrive="10:12", leave="10:40", name="B")
+        plan = lambda mode: {"start_lat": a["lat"], "start_lon": a["lon"], "depart": "10:00", "stops": [stop],
+                             "legs": [{"mode": mode, "km": 0.4, "min": 12}]}
+        safety = lambda idx, mode: crime.safety(crime.pair_cells(idx, [a, b]), plan(mode))
+        self.assertEqual(safety({"cells": {}}, "walk"), 10.0)
+        self.assertEqual(safety(idx, "ride"), 10.0)
+        risky = safety(idx, "walk")
+        self.assertTrue(0 < risky < 5, risky)
+        idx["cells"][crime.cell(b["lat"], b["lon"])] = hot  # the stop itself is on a bad block
+        self.assertLess(safety(idx, "walk"), risky)
+        self.assertIsNone(crime.safety(None, plan("walk")))
+
+    def test_B8_unsafe_plans_rank_lower(self):
+        c = routes.combine(profiles("me"), request.parse("Plan Saturday in Testville: coffee and a park"),
+                           start=TOWN_START, conditions=TOWN_WEATHER)
+        stops = [("cafe", TOWN["cafe"][0]), ("park", TOWN["park"][0])]
+        it = routes.simulate(stops, c)
+        self.assertIsNone(it["safety"])  # Testville has no crime data
+        safe = it["group_score"]
+        from planner import crime
+        hot = {"t": {"robbery": [4] * 24}}
+        c["crime"] = crime.pair_cells({"cells": {crime.cell(v["lat"], v["lon"]): hot for _, v in stops}},
+                                      [TOWN_START] + [v for _, v in stops])
+        routes.score_itinerary(it, stops, c, 17 * 60)
+        self.assertLess(it["safety"], 10)
+        self.assertAlmostEqual(safe - it["group_score"], routes.SAFETY_WEIGHT * (10 - it["safety"]), places=2)
 
     def test_B1_direction_matters(self):
         from planner import transit

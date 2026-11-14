@@ -102,6 +102,15 @@ def estimate(plan, body):
     return out
 
 
+TYPICAL_WEIGHT_KG = 70.0  # an average adult, for screens everyone sees
+
+
+def typical_kcal(plan):
+    """Calories burned walking for a typical 70 kg adult with no backpack, for screens everyone
+    sees (no personal data); each phone shows its owner's own number."""
+    return int(round(pandolf_kcal(plan, TYPICAL_WEIGHT_KG, 0)))
+
+
 def typical_steps(plan):
     """Steps at a typical stride, for screens everyone sees (no personal data)."""
     meters, _, _ = walking_totals(plan)

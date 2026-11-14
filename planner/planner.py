@@ -650,6 +650,7 @@ def finish(run, req, disk, work, chosen):
     reasons = run.state.get("reasons") or []
     plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco",
                   steps_typical=fitness.typical_steps(it),  # steps at a typical stride, for shared screens
+                  kcal_typical=fitness.typical_kcal(it),    # calories for a typical adult, likewise
                   why=reasons[i - 1] if i <= len(reasons) else "")
              for i, (name, it) in enumerate(chosen, 1)]
     if plans and run.state.get("ctx", {}).get("streets"):

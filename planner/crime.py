@@ -286,8 +286,23 @@ def pair_cells(idx, points, max_walk_km=3.0):
                 pairs.setdefault(ka, {})[kb] = hit
                 for c in hit:
                     used[c] = idx["cells"][c]
+    # For the safety index: every block with any street crime along each walk, and at each place,
+    # with its risk by hour (block_risk), so route branches can score safety without the full file.
+    along, risk = {}, {}
+    for ka, a in uniq.items():
+        c = cell(a["lat"], a["lon"])
+        if c in idx["cells"]:
+            risk[c] = None
+        for kb, b in uniq.items():
+            if ka == kb or _km(a, b) * 1.3 > SAFETY_WALK_KM:
+                continue
+            hit = [c for c in _cells_along(a, b) if c in idx["cells"]]
+            if hit:
+                along.setdefault(ka, {})[kb] = hit
+                risk.update(dict.fromkeys(hit))
+    risk = {c: [round(block_risk(idx["cells"][c], h), 2) for h in range(24)] for c in risk}
     return {"source": idx.get("source"), "covers": idx.get("covers"), "cells": used,
-            "pairs": pairs, "incidents": idx.get("incidents", 0)}
+            "pairs": pairs, "incidents": idx.get("incidents", 0), "along": along, "risk": risk}
 
 
 def _km(a, b):
@@ -318,6 +333,48 @@ def hotspot(crime, a, b, minute, tolerance):
     if worst:
         worst.pop("_rank")
     return worst
+
+
+SAFETY_WALK_KM = 4.0  # walks considered for the safety index (straight line x 1.3)
+SAFETY_SCALE = 8.0  # risk points that take the safety index from 10 to ~3.7 (one block at the "low" limit)
+
+
+def block_risk(info, h):
+    """One block's street crime around hour h, past year: serious crimes count 1 each, other
+    street crimes (simple assault, theft from a person, weapons, drugs) a tenth each."""
+    if not info:
+        return 0.0
+    counts = counts_at(info, h)
+    s = serious(counts)
+    return s + 0.1 * (sum(counts.values()) - s)
+
+
+def safety(crime_ctx, plan):
+    """0 (totally unsafe) to 10 (totally safe) for one plan, from the past year of street crime:
+    every walk adds its worst block at the hour it is walked, every stop adds its own block at
+    the hour of arrival; rides add nothing. index = 10 x exp(-risk / SAFETY_SCALE).
+    crime_ctx is pair_cells' output (it travels with the outing to every route branch).
+    None when the city has no crime data."""
+    if not crime_ctx or "risk" not in crime_ctx:
+        return None
+    table, along = crime_ctx["risk"], crime_ctx.get("along") or {}
+    hour = lambda t: int(t.split(":")[0]) % 24
+
+    def walk(a, b, t):
+        return max((table[c][hour(t)] for c in along.get(key(a), {}).get(key(b), []) if c in table), default=0.0)
+
+    start = {"lat": plan["start_lat"], "lon": plan["start_lon"]}
+    risk, prev, leave = 0.0, start, plan["depart"]
+    for lg, stop in zip(plan["legs"], plan["stops"]):
+        if lg["mode"] == "walk":
+            risk += walk(prev, stop, leave)
+        c = cell(stop["lat"], stop["lon"])
+        risk += table[c][hour(stop["arrive"])] if c in table else 0.0
+        prev, leave = stop, stop["leave"]
+    back = plan.get("return_leg")
+    if back and back["mode"] == "walk":
+        risk += walk(prev, start, leave)
+    return round(10 * math.exp(-risk / SAFETY_SCALE), 1)
 
 
 def describe(spot):
