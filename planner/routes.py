@@ -126,7 +126,28 @@ def climb_m(a, b, ctx=None):
 
 
 CRIME_RIDE_PENALTY = 0.1  # off the group score for each ride taken to avoid serious crime
+# What a ride costs the group, in US dollars. Estimates, not quotes: a typical UberX/Lyft
+# standard fare in a US city (base + per km + per minute + booking fee, a minimum fare, a pet
+# surcharge when the dog comes, and a 15% tip), one car for the group; a bus is one adult fare each.
+RIDE_FARE = {"base": 2.70, "per_km": 1.10, "per_min": 0.42, "fees": 3.50, "minimum": 11.0, "pet": 5.0, "tip": 0.15}
+BUS_FARE = 3.00
+RIDE_COST_WEIGHT = 0.006  # score lost per dollar spent on rides: a $25 rideshare costs 0.15
 RIDE_OVERHEAD_MIN = 8  # waiting for transit or a car, and walking to and from it
+
+
+def ride_fare(lg, ctx=None):
+    """Estimated cost of one leg for the group, in dollars (0 for a walk)."""
+    if lg["mode"] != "ride":
+        return 0.0
+    people = [p for p in (ctx or {}).get("people", []) if p.get("kind") == "person"]
+    if lg.get("bus"):
+        return round(BUS_FARE * max(1, len(people)), 2)
+    f = RIDE_FARE
+    car_min = lg.get("car_min", max(1, lg["min"] - RIDE_OVERHEAD_MIN))
+    fare = max(f["minimum"], f["base"] + f["per_km"] * lg["km"] + f["per_min"] * car_min) + f["fees"]
+    if ((ctx or {}).get("limits") or {}).get("dog"):
+        fare += f["pet"]
+    return round(fare * (1 + f["tip"]), 2)
 
 
 def leg(a, b, pace_kmh, streets=None, ctx=None, minute=None):
@@ -156,11 +177,15 @@ def leg(a, b, pace_kmh, streets=None, ctx=None, minute=None):
         unsafe = spot  # too many serious crimes there at this hour: ride instead
     bus = (((ctx or {}).get("bus") or {}).get("pairs") or {}).get(transit_key(a), {}).get(transit_key(b))
     if bus:  # a real bus route stops near both ends (planner/transit.py)
-        return {"mode": "ride", "km": round(d, 2), "min": bus["min"], "climb_m": 0, "hills": [],
-                "walk_km": bus["walk_km"], "streets": on_streets, "bus": bus, "avoids": unsafe}
-    ride_min = (streets["car_min"][ka][kb] + RIDE_OVERHEAD_MIN) if on_streets else 12 + d * 3
-    return {"mode": "ride", "km": round(d, 2), "min": round(ride_min), "climb_m": 0, "hills": [],
-            "walk_km": 0.3, "streets": on_streets, "rideshare": True, "avoids": unsafe}
+        out = {"mode": "ride", "km": round(d, 2), "min": bus["min"], "climb_m": 0, "hills": [],
+               "walk_km": bus["walk_km"], "streets": on_streets, "bus": bus, "avoids": unsafe}
+        out["fare"] = ride_fare(out, ctx)
+        return out
+    car_min = streets["car_min"][ka][kb] if on_streets else 4 + d * 3
+    out = {"mode": "ride", "km": round(d, 2), "min": round(car_min + RIDE_OVERHEAD_MIN), "car_min": round(car_min),
+           "climb_m": 0, "hills": [], "walk_km": 0.3, "streets": on_streets, "rideshare": True, "avoids": unsafe}
+    out["fare"] = ride_fare(out, ctx)
+    return out
 
 
 def transit_key(p):
@@ -285,6 +310,7 @@ def simulate(stops, ctx):
           "stops": timeline, "legs": legs, "walk_km": walk_km, "climb_m": climb,
           "travel_min": sum(lg["min"] for lg in legs) + (back["min"] if back else 0), "idle_min": idle,
           "return_leg": back,
+          "ride_cost": round(sum(lg.get("fare", 0) for lg in legs + ([back] if back else []))),
           "end": hhmm(t), "violations": violations, "notes": notes, "weather_at_end": wx}
     score_itinerary(it, stops, ctx, sunset)
     return it
@@ -296,6 +322,7 @@ def clip(x):
 
 TRAVEL_WEIGHT = 0.004  # score lost per minute of travel: an extra hour costs 0.24
 MAX_EXTRA_TRAVEL_MIN = 30  # alternatives may take at most this much longer to get around than plan 1
+MAX_EXTRA_RIDE_USD = 30  # ... and spend at most this much more on rides than plan 1
 MIN_DIFFERENT_STOPS = 2  # each alternative differs from every other plan in at least this many stops
 HILL_BONUS = 0.3  # for "I want hills": score added for climbing, full at 100 m
 
@@ -398,6 +425,8 @@ def score_itinerary(it, stops, ctx, sunset):
                       if lg.get("avoids"))
     it["crime_rides"] = crime_rides
     group -= CRIME_RIDE_PENALTY * crime_rides
+    # Rides cost money: the more a plan spends on Uber/Lyft/taxis (and buses), the lower it ranks.
+    group -= RIDE_COST_WEIGHT * it.get("ride_cost", 0)
     if lim.get("prefer_hills"):  # they asked for hills: climbing is a goal, up to HILL_BONUS
         group += HILL_BONUS * clip(it["climb_m"] / 100.0)
     group = 0.0 if it["violations"] else max(0.001, group)
@@ -429,6 +458,7 @@ def pick_diverse(plans, n=3, penalty=0.03):
         return []
     chosen = [pool[0]]
     limit = pool[0][1]["travel_min"] + MAX_EXTRA_TRAVEL_MIN
+    max_cost = pool[0][1].get("ride_cost", 0) + MAX_EXTRA_RIDE_USD
     cats = sorted(stop_names(pool[0][1]))
     need = min(MIN_DIFFERENT_STOPS, max(1, len(cats) - 1))
     while len(chosen) < n:
@@ -439,7 +469,7 @@ def pick_diverse(plans, n=3, penalty=0.03):
             return sum(s.get(c) == u.get(c) for c in cats)
 
         ok = [p for p in pool if p not in chosen and p[1]["travel_min"] <= limit
-              and all(len(cats) - shared(p, u) >= need for u in used)]
+              and p[1].get("ride_cost", 0) <= max_cost and all(len(cats) - shared(p, u) >= need for u in used)]
         if not ok:
             break
         best = max(ok, key=lambda p: p[1]["group_score"] - penalty * sum(shared(p, u) for u in used))

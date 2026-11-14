@@ -23,7 +23,7 @@ Write the messages as JSON with these fields:
 
 Rules for every text:
 - Keep every fact exactly as given. Never invent places, times or facts. Name every stop of every plan, exactly as written.
-- A plan text is short: the plan number and its name ("name", exactly as given), the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥. Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
+- A plan text is short: the plan number and its name ("name", exactly as given), the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥, then, if "ride_cost" is above 0, one line "💵 ~$<ride_cost> in rides". Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
 - Use emoji icons that match the content: 🕙 departure, ☕ cafe, 🏛️ museum, 🌳 park or trail, 🌯 burritos or lunch, 🏖️ beach, 🌊 riverside or waterfront, 🛍️ a stroll along a street, 🌅 a stop at sunset, 🐕 the dog, and start each plan with 1️⃣, 2️⃣ or 3️⃣.
 - Plain text with line breaks. No markdown: no headings, bold or asterisks.
 - Address the reader in the second person. If the reader is Ana, call the person who invited her "your friend"."""
@@ -67,6 +67,8 @@ def template(plans, reader, body=None):
             lines.append("🏁 back at the start by %s" % p.get("end", ""))
         fit = fitness.estimate(p, body)  # the reader's own steps and calories
         lines.append("👟 ~{:,} steps".format(fit["steps"]) + (" · 🔥 ~%d kcal" % fit["kcal"] if "kcal" in fit else ""))
+        if p.get("ride_cost"):
+            lines.append("💵 ~$%d in rides" % p["ride_cost"])
         out.append("\n".join(lines))
     numbers = [str(i) for i in range(1, len(plans) + 1)]
     reply = numbers[0] if len(numbers) == 1 else ", ".join(numbers[:-1]) + " or " + numbers[-1]
@@ -78,7 +80,7 @@ def _facts(plans, body=None):
     return [{"rank": p["rank"], "name": p.get("name"), "city": p.get("city") or "San Francisco", "start": p.get("start"), "depart": p.get("depart", "10:00"),
              "stops": [{"name": s["name"], "category": s["category"]} for s in p["stops"]],
              "your_steps": fitness.estimate(p, body)["steps"],
-             "your_kcal": fitness.estimate(p, body).get("kcal")} for p in plans]
+             "your_kcal": fitness.estimate(p, body).get("kcal"), "ride_cost": p.get("ride_cost", 0)} for p in plans]
 
 
 def with_claude(plans, reader, body=None):

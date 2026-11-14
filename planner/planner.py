@@ -598,6 +598,7 @@ def save_outing(run, req, plans):
                        "legs": [{k: v for k, v in l.items() if k != "path"} for l in p["legs"]],
                        "return_leg": {k: v for k, v in p["return_leg"].items() if k != "path"} if p.get("return_leg") else None,
                        "walk_km": p["walk_km"], "climb_m": p["climb_m"], "travel_min": p["travel_min"],
+                       "ride_cost_usd": p.get("ride_cost", 0),
                        "notes": p["notes"], "why": p.get("why")} for p in plans]}
     folder = os.path.join(DATA, "saved")
     os.makedirs(folder, exist_ok=True)

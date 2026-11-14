@@ -138,18 +138,24 @@ class ScoreTests(unittest.TestCase):
         self.assertLess(foggy["scores"]["Ana"], clear["scores"]["Ana"])
 
     def test_D6_minimal_travel(self):
-        """Plan 1 takes (nearly) the least travel of every feasible itinerary; no alternative zigzags."""
+        """Plan 1 is (nearly) the quickest way around for what it costs: no feasible itinerary is more than
+        10 minutes quicker without also spending more on rides. No alternative zigzags or splurges."""
         c = ctx("me", "ana", "biscuit", dog=True)
         cands = {cat: search.load_seed(cat) for cat in ("cafe", "museum", "food", "beach")}
         pool, every = [], []
         for fixed in all_branches(cands, c):
             pool += [("b", it) for it in routes.route_branch(fixed, cands, c)[0]]
             every += routes.route_branch(fixed, cands, c, keep=10 ** 6)[0]
-        fastest = min(it["travel_min"] for it in every)
         plans = [it for _, it in routes.pick_diverse(pool, 3)]
-        self.assertLessEqual(plans[0]["travel_min"], fastest + 10, "plan 1 %d min vs fastest %d" % (plans[0]["travel_min"], fastest))
+        first = plans[0]
+        no_dearer = [it for it in every if it["ride_cost"] <= first["ride_cost"]]
+        fastest = min(it["travel_min"] for it in no_dearer)
+        self.assertLessEqual(first["travel_min"], fastest + 10, "plan 1 %d min ($%d) vs %d min for no more money"
+                             % (first["travel_min"], first["ride_cost"], fastest))
+        self.assertLessEqual(first["ride_cost"], min(it["ride_cost"] for it in every) + 30)
         for p in plans:
-            self.assertLessEqual(p["travel_min"], plans[0]["travel_min"] + routes.MAX_EXTRA_TRAVEL_MIN)
+            self.assertLessEqual(p["travel_min"], first["travel_min"] + routes.MAX_EXTRA_TRAVEL_MIN)
+            self.assertLessEqual(p["ride_cost"], first["ride_cost"] + routes.MAX_EXTRA_RIDE_USD)
 
     def test_D4_scores_spread(self):
         """Known to fail today: scores bunch up at 9-10/10."""
@@ -788,6 +794,26 @@ class StreetCrimeTests(unittest.TestCase):
 
 class BusTests(unittest.TestCase):
     """B: a bus ride needs one route stopping near both ends, in the right direction."""
+
+    def test_B2_rides_cost_money_and_rank_lower(self):
+        """A rideshare is priced for the group (fare, fees, pet fee, tip); a bus is a fare each; walking is free.
+        A plan that spends more on rides scores lower, all else equal."""
+        ctx = {"people": [{"kind": "person"}, {"kind": "person"}, {"kind": "dog"}], "limits": {"dog": True}}
+        car = {"mode": "ride", "km": 8.0, "min": 30, "car_min": 22, "rideshare": True}
+        fare = routes.ride_fare(car, ctx)
+        self.assertTrue(25 < fare < 40, fare)  # about $31 for 8 km across SF with a dog
+        self.assertGreater(fare, routes.ride_fare(car, {"people": ctx["people"], "limits": {"dog": False}}))
+        self.assertEqual(routes.ride_fare(dict(car, bus={"route": "14"}), ctx), 6.0)
+        self.assertEqual(routes.ride_fare({"mode": "walk", "km": 1, "min": 12}, ctx), 0)
+        short = routes.ride_fare({"mode": "ride", "km": 1.0, "min": 12, "car_min": 4}, {"limits": {}})
+        self.assertAlmostEqual(short, round((routes.RIDE_FARE["minimum"] + routes.RIDE_FARE["fees"]) * 1.15, 2))
+        c = routes.combine(profiles("me"), request.parse("Plan Saturday in Testville: coffee and a park"),
+                           start=TOWN_START, conditions=TOWN_WEATHER)
+        it = routes.simulate([("cafe", TOWN["cafe"][0]), ("park", TOWN["park"][0])], c)
+        cheap = it["group_score"]
+        it["ride_cost"] = 50
+        routes.score_itinerary(it, [("cafe", TOWN["cafe"][0]), ("park", TOWN["park"][0])], c, 17 * 60)
+        self.assertAlmostEqual(cheap - it["group_score"], 50 * routes.RIDE_COST_WEIGHT, places=2)
 
     def test_B1_direction_matters(self):
         from planner import transit
