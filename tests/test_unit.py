@@ -1106,6 +1106,60 @@ class TwoParksOutdoorSeatingTests(unittest.TestCase):
         self.assertEqual(routes.orders(["park", "cafe", "park"], "park"), [("park", "cafe", "park#2")])
 
 
+class FreshStreetsTests(unittest.TestCase):
+    """Z: on the way there and back, don't walk the same street twice when a side street costs little."""
+
+    # A street grid about 100 m a block. Out along Main (y=0) to a stop up a side street (x=400, y=300);
+    # the shortest way on to the last stop goes back down that side street and along Main again,
+    # one block over (x=300) is a fresh street and only 100 m longer.
+    @staticmethod
+    def pt(x, y):  # meters east and north of (45.5, -122.6)
+        import math
+        return [45.5 + y / 111320.0, -122.6 + x / (111320.0 * math.cos(math.radians(45.5)))]
+
+    def line(self, *xy):
+        out = []
+        for (x0, y0), (x1, y1) in zip(xy, xy[1:]):
+            n = int(max(abs(x1 - x0), abs(y1 - y0)) // 20) or 1
+            out += [self.pt(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n) for i in range(n)]
+        return out + [self.pt(*xy[-1])]
+
+    def test_Z1_choose_a_fresh_street_when_it_costs_little(self):
+        from planner import streets
+        walked = streets.walked_cells(self.line((0, 0), (400, 0), (400, 300)))
+        back = self.line((400, 300), (400, 0), (200, 0))  # 500 m, 300 of them walked
+        fresh = self.line((400, 300), (300, 300), (300, 0), (200, 0))  # 500 m, none walked
+        longer = self.line((400, 300), (400, 400), (100, 400), (100, 0), (200, 0))  # 900 m: too far
+        self.assertGreaterEqual(streets.overlap_m(back, walked), 200)
+        self.assertLess(streets.overlap_m(fresh, walked), streets.WORTH_M)
+        self.assertIs(streets.choose_path([back, fresh], walked), fresh)
+        self.assertIs(streets.choose_path([back, longer], walked), back)  # the only other way is far longer
+        self.assertIs(streets.choose_path([longer, back], set()), back)  # nothing walked yet: shortest
+        self.assertEqual(streets.overlap_m(self.line((400, 300), (300, 300), (300, 0), (400, 0), (500, 0)), walked)
+                         // 10 * 10, 70)  # crossing or touching a walked street hardly counts; walking along it does
+
+    def test_Z2_add_paths_counts_the_side_street(self):
+        from unittest import mock
+        from planner import streets
+        start = {"lat": self.pt(0, 0)[0], "lon": self.pt(0, 0)[1]}
+        a = dict(zip(("lat", "lon"), self.pt(400, 300)), name="Park")
+        b = dict(zip(("lat", "lon"), self.pt(150, 0)), name="Thai Cart")
+        there = self.line((0, 0), (400, 0), (400, 300))
+        back = self.line((400, 300), (400, 0), (150, 0))  # 550 m, mostly walked already
+        fresh = self.line((400, 300), (300, 300), (300, 0), (150, 0))  # 550 m... plus nothing walked
+        detour = self.line((400, 300), (250, 300), (250, 100), (300, 100), (300, 0), (150, 0))  # 650 m
+        opts = {(streets.key(start), streets.key(a)): [there], (streets.key(a), streets.key(b)): [back, detour]}
+        plan = {"walk_km": 1.25, "notes": [], "stops": [a, b],
+                "legs": [{"mode": "walk", "km": 0.7, "min": 9}, {"mode": "walk", "km": 0.55, "min": 7}]}
+        with mock.patch.object(streets, "walk_options", lambda x, y, timeout=12, detours=True:
+                               opts[(streets.key(x), streets.key(y))] + ([fresh] if detours and y is b else [])):
+            streets.add_paths([plan], start)
+        self.assertIs(plan["legs"][1]["path"], fresh)  # found among the side-street detours, same length
+        self.assertNotIn("detour_km", plan["legs"][1])
+        self.assertEqual(plan["walk_km"], 1.25)
+        self.assertEqual(plan["notes"], [])
+
+
 class WeatherSourceTests(unittest.TestCase):
     """X: the forecast keeps working when a weather service doesn't answer."""
 

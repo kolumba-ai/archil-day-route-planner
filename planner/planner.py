@@ -703,6 +703,8 @@ def finish(run, req, disk, work, chosen):
     elif plans and streets.enabled():
         run.say("me", "Street routing is unavailable right now: the map shows straight lines and walking times "
                       "are estimates.", agent=True)
+    for p in plans:  # again, with any side streets taken to avoid walking a street twice
+        p.update(steps_typical=fitness.typical_steps(p), kcal_typical=fitness.typical_kcal(p))
     name_routes(plans, req)
     limits = limits_view(run.state.get("ctx") or {}, req)
     disk.write_json(work, "plans.json", plans)
