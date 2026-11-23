@@ -81,7 +81,8 @@ def dog_ana_allow(r):
     r.check("C5", "Hours", all(not p["violations"] for p in plans))
     stops = [{s["category"]: s["name"] for s in p["stops"]} for p in plans]
     diffs = [sum(a[c] != b[c] for c in a) for i, a in enumerate(stops) for b in stops[i + 1:]]
-    r.check("D5", "3 different plans", len(plans) == 3 and min(diffs) >= routes.MIN_DIFFERENT_STOPS,
+    r.check("D5", "%d different plans" % routes.PLAN_COUNT,
+            len(plans) == routes.PLAN_COUNT and min(diffs) >= routes.MIN_DIFFERENT_STOPS,
             "stops that differ between each pair of plans: %s" % diffs)
     travel = [p["travel_min"] for p in plans]
     r.check("D6", "Little time getting around", plans and max(travel) <= travel[0] + routes.MAX_EXTRA_TRAVEL_MIN,
@@ -256,7 +257,7 @@ def sandbox_routes(r):
     same = [[s["name"] for s in p["stops"]] for p in plans_of(local)] == \
            [[s["name"] for s in p["stops"]] for p in plans_of(remote)]
     timing = (ev(remote, "sandbox_timing") or [{}])[0]
-    r.check("E8", "Routes on Archil sandboxes", len(sbx) == 35 and not errors and len(kept) == 3
+    r.check("E8", "Routes on Archil sandboxes", len(sbx) == 35 and not errors and len(kept) == len(plans_of(remote))
             and all(kept) and same,
             "%d sandboxes, fan-out %.1f s, plan %.1f s, same plans as local: %s, errors: %s"
             % (len(sbx), timing.get("fanout_s", 0), secs, same, errors[:1]))

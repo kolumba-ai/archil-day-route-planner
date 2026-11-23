@@ -11,7 +11,7 @@ import os
 from . import fitness
 
 MODEL = "claude-opus-5-5"
-NUMBERS = ["1️⃣", "2️⃣", "3️⃣"]
+NUMBERS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
 
 SYSTEM = """You are a friendly personal assistant agent texting the person you work for about a day out in the city given with the plans ("city"); never name another city.
 You get a JSON list of plans the planner already chose, and who is reading.
@@ -19,12 +19,12 @@ You get a JSON list of plans the planner already chose, and who is reading.
 Write the messages as JSON with these fields:
 - "intro": one short opening text, e.g. that you have N options for Saturday.
 - "plans": one text per plan, in the same order as the input.
-- "question": one short closing text asking which plan they want, telling them to just reply with its number (for example "Just reply 1, 2 or 3"). Plans can't be changed, so never offer changes or alternatives.
+- "question": one short closing text asking which plan they want, telling them to just reply with its number (for example "Just reply 1, 2, 3 or 4", with as many numbers as there are plans). Plans can't be changed, so never offer changes or alternatives.
 
 Rules for every text:
 - Keep every fact exactly as given. Never invent places, times or facts. Name every stop of every plan, exactly as written.
 - A plan text is short: the plan number and its name ("name", exactly as given), the departure time ("depart"), each stop in order (one per line), then one line with the reader's own estimated steps ("your_steps") and calories ("your_kcal", if given), using 👟 and 🔥, then, if "ride_cost" is above 0, one line "💵 ~$<ride_cost> in rides". Nothing else: no arrival times, travel times, distances, scores or notes (those are shown elsewhere).
-- Use emoji icons that match the content: 🕙 departure, ☕ cafe, 🏛️ museum, 🌳 park or trail, 🌯 burritos or lunch, 🏖️ beach, 🌊 riverside or waterfront, 🛍️ a stroll along a street, 🌅 a stop at sunset, 🐕 the dog, and start each plan with 1️⃣, 2️⃣ or 3️⃣.
+- Use emoji icons that match the content: 🕙 departure, ☕ cafe, 🏛️ museum, 🌳 park or trail, 🌯 burritos or lunch, 🏖️ beach, 🌊 riverside or waterfront, 🛍️ a stroll along a street, 🌅 a stop at sunset, 🐕 the dog, and start each plan with its number: 1️⃣, 2️⃣, 3️⃣, 4️⃣.
 - Plain text with line breaks. No markdown: no headings, bold or asterisks.
 - Address the reader in the second person. If the reader is Ana, call the person who invited her "your friend"."""
 
@@ -60,7 +60,7 @@ def template(plans, reader, body=None):
               " 🐕" if any("Biscuit" in p["scores"] for p in plans) else "")]
     for p in plans:
         # On the phone: just when you leave and the stops. Details live in the Routes tab.
-        lines = ["%s %s · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= 3 else p["rank"],
+        lines = ["%s %s · 🕙 leave at %s" % (NUMBERS[p["rank"] - 1] if p["rank"] <= len(NUMBERS) else p["rank"],
                                              p.get("name") or "Plan %d" % p["rank"], p.get("depart", "10:00"))]
         lines += ["%s %s" % (_stop_icon(s), s["name"]) for s in p["stops"]]
         if p.get("return_leg"):

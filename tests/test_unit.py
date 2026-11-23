@@ -586,8 +586,11 @@ class DecisionTests(unittest.TestCase):
         fake = {"model": "subq-snap-1.1", "usage": {"input_tokens": 900, "output_tokens": 0},
                 "answers": {"best_plan": {"type": "choice", "choice": "p2", "confidence": 0.7,
                                           "probabilities": {"p0": 0.1, "p1": 0.05, "p2": 0.7, "p3": 0.15}}}}
-        ranked = decide.subq_rank(fake, shortlist)
+        ranked = decide.subq_rank(fake, shortlist, n=3)
         self.assertEqual([it for it, _ in ranked], [shortlist[2], shortlist[3], shortlist[0]])
+        ranked = decide.subq_rank(fake, shortlist)  # people choose from 4 plans unless PLANNER_PLANS says otherwise
+        self.assertEqual([it for it, _ in ranked], [shortlist[2], shortlist[3], shortlist[0], shortlist[1]])
+        self.assertEqual(routes.PLAN_COUNT, 4)
         with self.assertRaises(ValueError):
             decide.subq_rank({"answers": {"best_plan": {"choice": "zz", "probabilities": {"zz": 1}}}}, shortlist)
 

@@ -546,8 +546,8 @@ def routes_on_sandboxes(run, ctx, candidates, specs):
 
 
 def decide_and_record(run, pool, ctx):
-    """Phase 4: the decision step picks up to 3 plans and says why (planner/decide.py)."""
-    chosen, reasons, decided_by, note = decide.decide(pool, ctx, n=3)
+    """Phase 4: the decision step picks up to routes.PLAN_COUNT plans and says why (planner/decide.py)."""
+    chosen, reasons, decided_by, note = decide.decide(pool, ctx)
     run.state["reasons"] = reasons
     run.emit("decided", by=decided_by, reasons=reasons, note=note, candidates=len(pool))
     return chosen

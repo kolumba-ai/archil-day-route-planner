@@ -1,4 +1,4 @@
-"""The decision step: choose up to 3 plans and say why.
+"""The decision step: choose up to routes.PLAN_COUNT plans (4 unless PLANNER_PLANS says otherwise) and say why.
 
 Every candidate here has already passed the hard limits in code (walking distance, finish
 time, opening hours, dog rules, diet, hills), so a decision model only ranks and explains;
@@ -21,7 +21,7 @@ import urllib.error
 from . import routes
 
 CLAUDE_MODEL = "claude-haiku-5-5"
-SHORTLIST = 8
+SHORTLIST = 10  # candidates the deciders choose from (at least twice the plans shown)
 
 
 def which():
@@ -67,19 +67,20 @@ def subq_request(shortlist, ctx):
     }
 
 
-def subq_rank(response, shortlist, n=3):
+def subq_rank(response, shortlist, n=None):
     """Shortlist entries ordered by SubQ's probabilities, with each one's probability."""
     ans = response["answers"]["best_plan"]
     probs = ans.get("probabilities") or {ans["choice"]: 1.0}
     order = sorted(((p, k) for k, p in probs.items() if k.startswith("p") and k[1:].isdigit()
                     and int(k[1:]) < len(shortlist)), reverse=True)
-    picked = [(shortlist[int(k[1:])], p) for p, k in order][:n]
+    picked = [(shortlist[int(k[1:])], p) for p, k in order][:n or routes.PLAN_COUNT]
     if not picked:
         raise ValueError("SubQ returned no usable choice")
     return picked
 
 
-def by_subq(pool, ctx, n=3):
+def by_subq(pool, ctx, n=None):
+    n = n or routes.PLAN_COUNT
     import urllib.request
     key = os.environ.get("SUBQ_API_KEY", "").strip()
     if not key:
@@ -126,7 +127,8 @@ def explain(it, first, rank, fastest=None):
         ("%d min more" % extra) if extra > 0 else ("%d min less" % -extra) if extra < 0 else "same", flat, mood)
 
 
-def by_rules(pool, n=3):
+def by_rules(pool, n=None):
+    n = n or routes.PLAN_COUNT
     chosen = routes.pick_diverse(pool, n=n)
     first = chosen[0][1] if chosen else None
     return chosen, [explain(it, first, i) for i, (_, it) in enumerate(chosen, 1)]
@@ -144,7 +146,7 @@ SCHEMA = {
 }
 
 SYSTEM = """You choose the plans a group will see for a day out. Every candidate already respects the group's hard limits, so judge only quality.
-Pick up to 3 candidates, best first. Prefer little time getting around and nobody unhappy (look at each person's score); the alternatives should be real alternatives (different stops), not near-copies.
+Pick up to %d candidates, best first. Prefer little time getting around and nobody unhappy (look at each person's score); the alternatives should be real alternatives (different stops), not near-copies.
 For each pick write one short sentence on why, using only the facts given (times, distances, scores, notes). Never invent facts."""
 
 
@@ -154,7 +156,8 @@ def _card(i, it):
             "finish": it["end"], "scores": it["scores"], "notes": it["notes"]}
 
 
-def by_claude(pool, ctx, n=3):
+def by_claude(pool, ctx, n=None):
+    n = n or routes.PLAN_COUNT
     import anthropic
     shortlist = routes.pick_diverse(pool, n=SHORTLIST)  # varied, sensible candidates only
     if len(shortlist) <= 1:
@@ -162,7 +165,7 @@ def by_claude(pool, ctx, n=3):
     group = {"limits": {k: ctx["limits"][k] for k in ("max_km", "avoid_hills", "dog") if k in ctx["limits"]},
              "people": [p["name"] for p in ctx["people"]]}
     resp = anthropic.Anthropic().messages.create(
-        model=CLAUDE_MODEL, max_tokens=2000, system=SYSTEM,
+        model=CLAUDE_MODEL, max_tokens=2000, system=SYSTEM % n,
         messages=[{"role": "user", "content": json.dumps({"group": group, "candidates": [
             _card(i, it) for i, (_, it) in enumerate(shortlist)]}, ensure_ascii=False)}],
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
@@ -191,8 +194,9 @@ def validate(picks, shortlist, n):
 
 # ---------------------------------------------------------------- entry point
 
-def decide(pool, ctx, n=3):
+def decide(pool, ctx, n=None):
     """Returns (chosen [(branch, itinerary)], reasons [str], decided_by, note)."""
+    n = n or routes.PLAN_COUNT
     who = which()
     note = ""
     try:

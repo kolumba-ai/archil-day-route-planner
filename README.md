@@ -5,7 +5,7 @@ A hackathon demo of agents that plan a San Francisco day out for a group (two fr
 - Each person keeps their limits (walking, hills, diet, museum time, weather) in their own profile and shares only a summary, with consent.
 - The planner combines everyone's limits with the request (city, start, time, walking limit, stops), searches for the stops asked for (cafes, parks, museums, food, beaches), then forks one branch per combination of two key stops (for example each museum-and-beach pair, or each park-and-coffee-shop pair) to simulate routes: walking time on real streets, hills, opening hours, dog rules and the weather.
 - With `PLANNER_ROUTES=sandboxes`, every route branch runs in its own **Archil sandbox** (35 to 50 microVMs per request, forked from one base sandbox in about a second).
-- A judge picks up to 3 different plans that leave nobody unhappy and keep travel time low; each person picks one by texting its number (1, 2 or 3). Plans can't be changed.
+- A judge picks up to 4 different plans (`PLANNER_PLANS`) that leave nobody unhappy and keep travel time low; each person picks one by texting its number (1 to 4). Plans can't be changed.
 
 ### Not just San Francisco
 
@@ -23,7 +23,7 @@ Each route simulation runs in its own Archil sandbox. The group's preferences ar
 
 1. Everyone's limits and preferences, plus the candidate venues, are written to one base sandbox. That sandbox is then stopped, so it acts as a checkpoint.
 2. The planner forks that base once per simulation (one per museum-and-beach pair). Each fork is a copy-on-write branch of the base's disk, so it starts with all the preferences already in place and nothing is copied.
-3. Each sandbox simulates its routes independently and writes its results only to its own branch. The winning sandboxes are kept as `plan-1` to `plan-3`; the rest are deleted.
+3. Each sandbox simulates its routes independently and writes its results only to its own branch. The winning sandboxes are kept as `plan-1` to `plan-4`; the rest are deleted.
 
 The center of the demo has three screens that show this while it runs:
 
@@ -89,6 +89,7 @@ python3 server.py       # then open http://localhost:8765
 | `ANTHROPIC_API_KEY` | Claude Haiku 5.5 reads chat text: the request, the start reply, plan picks like "the second one"; every field is checked, the rules fill gaps. Also Claude web search (Opus 5.5) for the start place and for venues in every city: current hours, closures, dog rules, gluten-free options; the map only gives coordinates |
 | `OPENAI_API_KEY` | OpenAI (`OPENAI_MODEL`, default `gpt-5.4-mini`) reads chat text when there is no Anthropic key |
 | `OVERPASS_CH_KEY` | Find venues (by cuisine, food trucks) and geocode starts with overpass.ch |
+| `PLANNER_PLANS` | How many plans to offer (default 4) |
 | `PLANNER_BUSY_ADT` | Vehicles a day at which a street counts as half busy (default 20000) |
 | `PLANNER_KEEP_OUTINGS` | How many `data/outing-*` folders to keep (default 20); older ones are deleted when a plan starts |
 | `PLANNER_KEEP_TEST_RUNS` | How many `data/test-runs/*` folders to keep (default 10) |

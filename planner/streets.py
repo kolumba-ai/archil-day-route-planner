@@ -32,6 +32,11 @@ def key(p):
     return "%.3f,%.3f" % (p["lat"], p["lon"])
 
 
+def exact(p):
+    # About 1 m: a street path must start and end at these very places, so it is cached by them.
+    return "%.5f,%.5f" % (p["lat"], p["lon"])
+
+
 def _get(url, timeout=30):
     try:
         req = urllib.request.Request(url, headers=HEADERS)
@@ -171,7 +176,7 @@ def _valhalla_path(a, b, mode, timeout=30):
 def path(a, b, mode, timeout=30):
     """Street path from a to b as [[lat, lon], ...]; mode 'walk' (foot) or 'ride' (car)."""
     profile = "foot" if mode == "walk" else "car"
-    ck = "path:%s:%s:%s" % (profile, key(a), key(b))
+    ck = "path2:%s:%s:%s" % (profile, exact(a), exact(b))
     with _lock:
         cache = _load()
         if ck in cache:
@@ -307,7 +312,7 @@ def _vias(a, b):
 def walk_options(a, b, timeout=12, detours=True):
     """Street paths for walking a-b: the router's alternatives and, if asked, routes through a
     parallel street to either side. Cached like `path`."""
-    ck = "walkopts:%s:%s:%d" % (key(a), key(b), detours)
+    ck = "walkopts2:%s:%s:%d" % (exact(a), exact(b), detours)
     with _lock:
         cache = _load()
         if ck in cache:
@@ -322,6 +327,7 @@ def walk_options(a, b, timeout=12, detours=True):
                 a["lon"], a["lat"], v["lon"], v["lat"], b["lon"], b["lat"])
             return pts(_get(u, timeout)["routes"][0])
     except Exception:  # OSRM busy or down: Valhalla, the second OpenStreetMap router, the same way
+        ck = None  # not kept: when OSRM is back, the next plan gets its routes
         opts = _valhalla_paths([a, b], "walk", timeout, alternates=2)
 
         def through(v):
@@ -332,9 +338,10 @@ def walk_options(a, b, timeout=12, detours=True):
                 opts.append(through(v))
             except Exception:
                 pass  # that detour isn't possible; the others still are
-    with _lock:
-        _cache[ck] = opts
-        _save()
+    if ck:
+        with _lock:
+            _cache[ck] = opts
+            _save()
     return opts
 
 

@@ -6,7 +6,7 @@ Archil exec microVM (Python 3.10 + Archil SDK), which:
 2. creates a base sandbox with the planner code and this outing's context + candidates,
    then stops it (the stopped base is the `candidates` checkpoint),
 3. forks one sandbox per route branch (a combination of anchor venues), all at once, and runs planner.route_worker,
-4. judges the results, keeps the 3 winning sandboxes (stopped) as plan-1..3 and the base,
+4. judges the results, keeps the winning sandboxes (stopped) as plan-1, plan-2... and the base,
    and deletes the rest.
 """
 import io
@@ -79,7 +79,7 @@ fan_s = T() - t
 
 # 4. judge, keep winners (stopped) as plan checkpoints, delete the rest
 plans = [(r["branch"], it) for r in results if "best" in r for it in r["best"]]
-chosen = routes.pick_diverse(plans, n=3)
+chosen = routes.pick_diverse(plans)
 keep = {name for name, _ in chosen}
 def finish(r):
     sb = r.pop("sandbox", None)

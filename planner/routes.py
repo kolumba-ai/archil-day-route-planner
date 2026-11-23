@@ -482,7 +482,10 @@ def stop_names(it):
     return dict(zip(slots([s["category"] for s in it["stops"]]), (s["name"] for s in it["stops"])))
 
 
-def pick_diverse(plans, n=3, penalty=0.03):
+PLAN_COUNT = int(os.environ.get("PLANNER_PLANS", "4"))  # how many plans people choose from
+
+
+def pick_diverse(plans, n=None, penalty=0.03):
     """Judge: the best plan, then up to n-1 real alternatives.
 
     plans: list of (branch_name, itinerary). Plan 1 is the highest score (happiness minus
@@ -492,6 +495,7 @@ def pick_diverse(plans, n=3, penalty=0.03):
     the city. Each stop it shares with an already chosen plan costs `penalty`. Returns
     fewer than n plans rather than a bad one.
     """
+    n = n or PLAN_COUNT
     pool = sorted(plans, key=lambda p: -p[1]["group_score"])
     if not pool:
         return []

@@ -142,7 +142,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const PHONES = { me: {who:'Me', title:'My agent', placeholder:'Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset'},
-                 ana: {who:'Ana', title:"Ana's agent", placeholder:"Reply 1, 2 or 3 to pick a plan"} };
+                 ana: {who:'Ana', title:"Ana's agent", placeholder:"Reply with a plan's number to pick it"} };
 let run = null, es = null, runInfo = {}, events = [], plans = [], limits = [], votes = {}, decided = null, selected = 0, map, layer, startPlace = null;
 
 // ---------------------------------------------------------------- phones
@@ -323,7 +323,7 @@ function handle(e) {
       break;
     case 'plans': plans = e.plans; limits = e.limits || []; selected = 0; renderPlans(); break;
     case 'saved': if (e.path) $('backend').textContent += ' · Saved to ' + e.path; break;
-    case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply 1, 2 or 3
+    case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply with a plan's number
       document.querySelector('#phone-' + (w === 'Me' ? 'me' : 'ana') + ' textarea').placeholder =
         'Reply ' + e.ranks.join(', ').replace(/, (\d)$/, ' or $1') + ' to pick a plan';
     }); break;

@@ -30,7 +30,7 @@ def plan_facts(p):
 
 
 def interpret(run, who, text):
-    """Turn a typed message into an action: a new plan, a pick (1, 2 or 3), or a hint.
+    """Turn a typed message into an action: a new plan, a pick (a plan's number), or a hint.
 
     Plans can't be changed: people only choose one by texting its number.
     """
