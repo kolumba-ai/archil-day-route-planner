@@ -208,8 +208,8 @@ def understood(req, start, city):
     food = food_wish(req)
     lines = ["Here's what I understood:",
              "📅 %s, %s" % (req["day"], city),
-             "📍 Start: %s%s at %s" % (place_name(start), ", " + start["address"] if start.get("address") else "",
-                                      routes.hhmm(req["start_min"])),
+             "📍 Start: %s%s%s" % (place_name(start), ", " + start["address"] if start.get("address") else "",
+                                  " at " + routes.hhmm(req["start_min"]) if req.get("start_min") is not None else ""),
              "🗺️ " + stops]
     if food:
         lines.append("🍽️ " + food[0].upper() + food[1:])
@@ -295,6 +295,12 @@ def plan(run, text, confirmed=True):
         run.emit("need_start", reason=problem[0], place=req["start_place"], city=city)
         run.say("me", problem[1], agent=True)
         run.emit("done", ok=False, reason="need_start")
+        return
+    if req.get("start_min") is None:  # when, before anything else too: never a guessed start time
+        run.state.update(needs_time=True, original=text)
+        run.emit("need_time", place=place_name(start), city=city)
+        run.say("me", "What time should we start from %s? For example 10am or 9:30." % place_name(start), agent=True)
+        run.emit("done", ok=False, reason="need_time")
         return
     if conditions is None and start is not routes.START:
         try:
@@ -717,12 +723,35 @@ def apply_detours(plan, ctx, candidates):
     if redo["violations"] or [l["mode"] for l in new_legs] != [l["mode"] for l in legs]:
         return undo()
     for old, new in zip(legs, new_legs):  # the map paths stay with their legs
-        new.update({k: old[k] for k in ("path", "path_error", "detour_km", "short_path") if k in old})
+        new.update({k: old[k] for k in ("path", "path_error", "detour_km", "short_path", "busy_m", "busy_streets")
+                    if k in old})
     plan.update({k: redo[k] for k in DETOUR_FIELDS if k in redo})
     km = sum(extra.values())
     mins = sum(n["min"] - o["min"] for o, n in zip(legs, new_legs))
     plan["notes"].append("Takes side streets so you don't walk the same street twice (+%d m, +%d min)"
                          % (round(km * 1000), mins))
+
+
+BUSY_SCORE_PER_M = 0.0004  # 100 m beside a busy street costs a plan as much as 10 more minutes getting around
+
+
+def note_busy_streets(plan):
+    """Say which busy streets a plan still walks along (after the routing avoided what it could),
+    and lower its score for it."""
+    legs = plan["legs"] + ([plan["return_leg"]] if plan.get("return_leg") else [])
+    total = sum(l.get("busy_m", 0) for l in legs if l["mode"] == "walk")
+    plan["busy_m"] = total
+    if not total:
+        return
+    streets_ = {}
+    for l in legs:
+        for name, (m, adt) in (l.get("busy_streets") or {}).items():
+            had = streets_.get(name, (0, 0))
+            streets_[name] = (had[0] + m, max(had[1], adt))
+    top = sorted(streets_.items(), key=lambda kv: -kv[1][0])[:2]
+    plan["notes"].append("Walks %d m beside busy traffic: %s" % (total, "; ".join(
+        "%d m along %s (about %s vehicles a day)" % (m, name, format(int(adt), ",")) for name, (m, adt) in top)))
+    plan["group_score"] = round(plan["group_score"] - BUSY_SCORE_PER_M * total, 3)
 
 
 def finish(run, req, disk, work, chosen):
@@ -749,6 +778,7 @@ def finish(run, req, disk, work, chosen):
     before = explained()
     for p in plans:  # with any side streets taken to avoid walking a street twice
         apply_detours(p, run.state.get("ctx") or {}, run.state.get("candidates") or {})
+        note_busy_streets(p)
         p.update(steps_typical=fitness.typical_steps(p), kcal_typical=fitness.typical_kcal(p))
     for p, old, new in zip(plans, before, explained()):  # "32 min getting around" -> "40 min"
         if old != new and p.get("why", "").startswith(old):

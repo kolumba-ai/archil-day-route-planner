@@ -232,11 +232,19 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(r["start_place"], "Laurelhurst Park")  # the latest answer wins
         self.assertEqual(request.parse("Plan Saturday in Portland starting at 10am, coffee")["start_place"], None)
 
+    def test_R10_reads_a_start_time_reply(self):
+        read = request.read_clock
+        for text, want in (("10am", 600), ("9:30", 570), ("at 10", 600), ("2", 14 * 60), ("2 pm", 14 * 60),
+                           ("noon", 720), ("let's start at 11:15 am", 675), ("13:00", 780)):
+            self.assertEqual(read(text), want, text)
+        for text in ("whenever", "", "3am", "around 23"):
+            self.assertIsNone(read(text), text)
+
     def test_R8_finish_time_and_limits(self):
         r = request.parse(self.USER)
         self.assertEqual((r["start_min"], r["end_min"], r["max_walk_km"]), (10 * 60, 15 * 60, 3.0))
         r = request.parse("Plan Saturday in Portland starting at Laurelhurst Park, coffee, back by 2:30 pm, finish at 3pm")
-        self.assertEqual(r["start_min"], 10 * 60)  # "finish at 3pm" is not a start time
+        self.assertIsNone(r["start_min"])  # "finish at 3pm" is not a start time; none given, so the agent asks
         self.assertEqual(r["end_min"], 14 * 60 + 30)
 
     KOREAN = ("Propose a Saturday plan with Ana starting at St Stephens Catholic Church in Portland that includes a visit "
@@ -708,17 +716,29 @@ class ConfirmFirstTests(unittest.TestCase):
         run = planner.Run()
         with mock.patch.object(planner, "resolve_start", return_value=(start, weather, None)):
             planner.plan(run, RIVERSIDE, confirmed=False)
+        # No start time in the request: the agent asks for one instead of assuming 10am.
+        types = [e["type"] for e in run.events]
+        self.assertIn("need_time", types)
+        self.assertNotIn("confirm", types)
+        self.assertIn("What time should we start", [e["text"] for e in run.events if e["type"] == "message"][-1])
+        self.assertEqual(server.interpret(run, "Me", "whenever")[0], "hint")  # no time in it: asked again
+        action, timed = server.interpret(run, "Me", "let's say 9:30")
+        self.assertEqual((action, timed), ("plan", RIVERSIDE.rstrip(".") + ". Start at 9:30am."))
+        self.assertEqual(request.parse(timed)["start_min"], 9 * 60 + 30)
+        run = planner.Run()
+        with mock.patch.object(planner, "resolve_start", return_value=(start, weather, None)):
+            planner.plan(run, timed, confirmed=False)
         types = [e["type"] for e in run.events]
         self.assertIn("confirm", types)
         self.assertNotIn("share_request", types)  # Ana hears nothing yet
         said = [e["text"] for e in run.events if e["type"] == "message"][-1]
-        for bit in ("Here's what I understood", "riverside", "at sunset", "Ana", "Biscuit", "Reply yes"):
+        for bit in ("Here's what I understood", "riverside", "at sunset", "Ana", "Biscuit", "at 09:30", "Reply yes"):
             self.assertIn(bit, said)
-        self.assertEqual(server.interpret(run, "Me", "yes"), ("plan_confirmed", RIVERSIDE))
+        self.assertEqual(server.interpret(run, "Me", "yes"), ("plan_confirmed", timed))
         action, text = server.interpret(run, "Me", "make it a beach instead")
         self.assertEqual(action, "plan")
-        self.assertTrue(text.startswith(RIVERSIDE.rstrip(".")) and text.endswith("make it a beach instead"))
-        brief = planner.weather_brief(weather, request.parse(RIVERSIDE), "Portland Oregon")
+        self.assertTrue(text.startswith(timed.rstrip(".")) and text.endswith("make it a beach instead"))
+        brief = planner.weather_brief(weather, request.parse(RIVERSIDE + " Start at 10am."), "Portland Oregon")
         self.assertEqual(brief, "🌤️ Weather for Saturday in Portland Oregon: 11–12°C, wind up to 14 km/h, no fog. "
                                 "🌅 Sunset 16:40.")
 
@@ -1202,6 +1222,90 @@ class DetourTimeTests(unittest.TestCase):
         self.assertEqual(plan["legs"][0]["path"], [[0, 9], [1, 9]])  # back on the shortest streets
         self.assertNotIn("detour_km", plan["legs"][0])
         self.assertEqual((plan["end"], plan["walk_km"], plan["notes"]), (old["end"], old["walk_km"], old["notes"]))
+
+
+class BusyStreetTests(unittest.TestCase):
+    """T: busy streets (traffic volume from street tags, an S curve) are walked along as little as possible."""
+
+    MODEL = {"class": {"primary": 9.0, "secondary": 8.6, "tertiary": 8.0, "residential": 6.0},
+             "coef": {"ln_lanes": 0.8, "kmh": 0.01, "oneway": -0.3, "ref": 0.2},
+             "default_lanes": {"primary": 4, "secondary": 2, "tertiary": 2, "residential": 2},
+             "default_kmh": {"primary": 48, "secondary": 40, "tertiary": 40, "residential": 32}}
+
+    def setUp(self):
+        from unittest import mock
+        from planner import traffic
+        self.traffic = traffic
+        p = mock.patch.object(traffic, "_model", self.MODEL)
+        p.start()
+        self.addCleanup(p.stop)
+
+    pt = staticmethod(FreshStreetsTests.pt)
+    line = FreshStreetsTests.line
+
+    def way(self, highway, *xy, **tags):
+        return {"tags": dict(tags, highway=highway, name=tags.get("name", highway.title() + " Road")),
+                "geometry": [dict(zip(("lat", "lon"), self.pt(x, y))) for x, y in xy]}
+
+    def test_T1_s_curve_in_traffic(self):
+        b, adt = self.traffic.busyness, self.traffic.BUSY_ADT
+        self.assertAlmostEqual(b(adt), 0.5, places=3)
+        self.assertAlmostEqual(b(adt / 1.3), 0.1, places=2)
+        self.assertAlmostEqual(b(adt * 1.3), 0.9, places=2)
+        self.assertLess(b(2000), 0.01)
+        self.assertGreater(b(40000), 0.99)
+        self.assertEqual(b(None), 0.0)
+
+    def test_T2_traffic_from_street_tags(self):
+        est = self.traffic.estimate_adt
+        arterial = est({"highway": "primary", "lanes": "4", "maxspeed": "25 mph"})
+        main_street = est({"highway": "secondary", "lanes": "3", "maxspeed": "20 mph"})
+        side = est({"highway": "residential", "maxspeed": "20 mph"})
+        self.assertGreater(arterial, main_street)
+        self.assertGreater(main_street, side)
+        self.assertGreater(est({"highway": "primary", "lanes": "6"}), est({"highway": "primary", "lanes": "2"}))
+        self.assertAlmostEqual(self.traffic.speed_kmh({"maxspeed": "25 mph"}), 40.2, places=1)
+        self.assertEqual(self.traffic.speed_kmh({"maxspeed": "50"}), 50)
+        self.assertIsNone(est({"highway": "footway"}))  # not a street for cars
+
+    def roads(self):
+        busy = self.way("primary", (0, -200), (0, 800), lanes="6", maxspeed="35 mph", name="Arterial Avenue")
+        quiet = self.way("residential", (200, -200), (200, 800), name="Quiet Avenue")
+        cross = self.way("residential", (-100, 0), (300, 0), name="Cross Street")
+        return self.traffic.Roads([busy, quiet, cross])
+
+    def test_T3_walks_are_matched_to_the_street_beside_them(self):
+        roads = self.roads()
+        along_busy = self.traffic.profile(self.line((10, 0), (10, 600)), roads)  # its sidewalk, 10 m from the middle
+        along_quiet = self.traffic.profile(self.line((200, 0), (200, 600)), roads)
+        crossing = self.traffic.profile(self.line((-100, 0), (300, 0)), roads)
+        self.assertGreaterEqual(along_busy["busy_m"], 500)
+        self.assertIn("Arterial Avenue", along_busy["streets"])
+        self.assertEqual(along_quiet["busy_m"], 0)
+        self.assertLessEqual(crossing["busy_m"], 30)  # crossing it isn't walking along it
+
+    def test_T4_routes_keep_off_busy_streets(self):
+        from planner import streets
+        roads = self.roads()
+        busy = lambda o: self.traffic.profile(o, roads)
+        on_arterial = self.line((0, 0), (0, 600))  # 600 m
+        side_street = self.line((0, 0), (200, 0), (200, 600), (0, 600))  # 1000 m: 400 m more
+        far_around = self.line((0, 0), (200, 0), (200, 700), (-50, 700), (-50, 600), (0, 600))  # 1200 m
+        self.assertIs(streets.choose_path([on_arterial, side_street], set(), busy=busy), side_street)
+        self.assertIs(streets.choose_path([on_arterial, far_around], set(), busy=busy), far_around)  # 600 m more is OK
+        self.assertIs(streets.choose_path([on_arterial, side_street], set(), max_extra_km=0.2, busy=busy),
+                      on_arterial)  # the walking limit leaves no room
+        self.assertIs(streets.choose_path([on_arterial, side_street], set()), on_arterial)  # no traffic data: shortest
+
+    def test_T5_plan_says_which_busy_street_and_scores_lower(self):
+        plan = {"group_score": 0.8, "notes": [], "legs": [
+            {"mode": "walk", "busy_m": 60, "busy_streets": {"Arterial Avenue": [60, 24000]}},
+            {"mode": "walk", "busy_m": 0, "busy_streets": {}}]}
+        planner.note_busy_streets(plan)
+        self.assertEqual(plan["busy_m"], 60)
+        self.assertEqual(plan["notes"], ["Walks 60 m beside busy traffic: 60 m along Arterial Avenue "
+                                         "(about 24,000 vehicles a day)"])
+        self.assertAlmostEqual(plan["group_score"], 0.8 - 60 * planner.BUSY_SCORE_PER_M, places=3)
 
 
 class WeatherSourceTests(unittest.TestCase):

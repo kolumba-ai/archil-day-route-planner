@@ -124,6 +124,25 @@ def _decode_polyline6(s):
     return pts
 
 
+def _post_json(url, body, timeout=30):
+    """POST JSON, read JSON. Like `_get`, falls back to curl when Python's TLS is refused (macOS's
+    built-in Python 3.9 has an old TLS library some servers turn away)."""
+    data = json.dumps(body).encode()
+    try:
+        req = urllib.request.Request(url, data=data, headers=dict(HEADERS, **{"Content-Type": "application/json"}))
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.URLError as e:
+        if "SSL" not in str(e) and "ssl" not in str(e):
+            raise
+        out = subprocess.run(["curl", "-s", "-f", "-m", str(timeout), "-H", "User-Agent: " + HEADERS["User-Agent"],
+                              "-H", "Content-Type: application/json", "--data-binary", "@-", url],
+                             input=data.decode(), capture_output=True, text=True)
+        if out.returncode != 0:
+            raise RuntimeError("curl failed (%d)" % out.returncode)
+        return json.loads(out.stdout)
+
+
 def _valhalla_paths(points, mode, timeout=30, alternates=0):
     """Valhalla routes through `points` in order: the best one first, then up to `alternates`
     others (only between two points)."""
@@ -132,10 +151,7 @@ def _valhalla_paths(points, mode, timeout=30, alternates=0):
             "costing": "pedestrian" if mode == "walk" else "auto"}
     if alternates and len(points) == 2:
         body["alternates"] = alternates
-    req = urllib.request.Request(VALHALLA, data=json.dumps(body).encode(),
-                                 headers=dict(HEADERS, **{"Content-Type": "application/json"}))
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
+    d = _post_json(VALHALLA, body, timeout)
     out = []
     for trip in [d["trip"]] + [x["trip"] for x in d.get("alternates") or []]:
         pts = []
@@ -180,6 +196,10 @@ SAMPLE_M = 10  # a path is checked every 10 m
 END_SKIP_M = 60  # leaving or reaching a stop may have to use its one street; that doesn't count
 MAX_EXTRA_KM = 0.45  # a fresh street may make a walk up to 450 m longer: see more of the city
 WORTH_M = 50  # switch only to save at least 50 m of walking a street again
+REPEAT_W = 10  # a meter walked again costs like 10 more meters of walking
+BUSY_W = 10  # so does a meter beside a busy street (weighted by how busy: planner/traffic.py)
+BUSY_MAX_M = 100  # walk at most 100 m along busy streets when any route manages it...
+MAX_BUSY_EXTRA_KM = 0.8  # ...even if that route is up to 800 m longer (within the walking limit)
 
 
 def _m(a, b):
@@ -229,19 +249,40 @@ def overlap_m(pts, walked):
     return hit * SAMPLE_M
 
 
-def choose_path(options, walked, max_extra_km=MAX_EXTRA_KM):
-    """The path that walks the fewest streets again, if it's at most `max_extra_km` longer than
-    the shortest and saves at least WORTH_M of repeats; otherwise the shortest."""
+def choose_path(options, walked, max_extra_km=None, busy=None):
+    """The best path among the options: the shortest unless another one walks fewer streets
+    again or fewer busy streets.
+
+    `busy(path)` gives {"busy_m", "cost_m"} (planner/traffic.py profile). A path with at most
+    BUSY_MAX_M on busy streets is preferred when one exists up to MAX_BUSY_EXTRA_KM longer;
+    among the rest (up to MAX_EXTRA_KM longer), the lowest cost wins, where cost is meters walked
+    plus REPEAT_W per meter walked again and BUSY_W per busy meter. Never more than
+    `max_extra_km` longer (what the walking limit leaves), and a switch must save WORTH_M."""
     options = [o for o in options if o and len(o) >= 2]
     if not options:
         return None
     best = min(options, key=path_km)
-    if not walked:
+    if not walked and not busy:
         return best
-    limit = path_km(best) + max(0.0, min(max_extra_km, MAX_EXTRA_KM))
-    ok = [o for o in options if path_km(o) <= limit + 1e-9]
-    fresh = min(ok, key=lambda o: (overlap_m(o, walked), path_km(o)))
-    return fresh if overlap_m(best, walked) - overlap_m(fresh, walked) >= WORTH_M else best
+    seen = {}
+
+    def prof(o):
+        if id(o) not in seen:
+            seen[id(o)] = busy(o) if busy else {"busy_m": 0, "cost_m": 0.0}
+        return seen[id(o)]
+
+    def cost(o):
+        return path_km(o) * 1000 + REPEAT_W * (overlap_m(o, walked) if walked else 0) + BUSY_W * prof(o)["cost_m"]
+
+    room = float("inf") if max_extra_km is None else max(0.0, max_extra_km)  # what the walking limit leaves
+    within = lambda cap: [o for o in options if path_km(o) <= path_km(best) + min(room, cap) + 1e-9]
+    ok = within(MAX_EXTRA_KM)
+    calm = [o for o in within(MAX_BUSY_EXTRA_KM) if prof(o)["busy_m"] <= BUSY_MAX_M]
+    if prof(best)["busy_m"] > BUSY_MAX_M and calm:  # off the busy street, even if it's a longer way
+        return min(calm, key=cost)
+    pool = [o for o in ok if prof(o)["busy_m"] <= max(BUSY_MAX_M, prof(best)["busy_m"])]
+    pick = min(pool, key=cost)
+    return pick if cost(best) - cost(pick) >= WORTH_M else best
 
 
 def _vias(a, b):
@@ -309,14 +350,23 @@ def _legs(p, start):
     return out
 
 
-def add_paths(plans, start, max_walk_km=None):
+def add_paths(plans, start, max_walk_km=None, roads=None):
     """Attach a street path to every leg of every plan (in place); plans are fetched in parallel,
     the legs of one plan in order. A walk avoids streets the plan already walked when a
     parallel street costs at most MAX_EXTRA_KM more (choose_path), and never past
-    `max_walk_km` for the whole plan. If the router refuses or times out, stop
-    asking: the map draws straight lines instead, so an outage costs seconds, not minutes."""
+    `max_walk_km` for the whole plan. Walks keep off busy streets the same way (`roads`:
+    planner/traffic.py; looked up around the plans when not given). If the router refuses or
+    times out, stop asking: the map draws straight lines instead, so an outage costs seconds."""
     from concurrent.futures import ThreadPoolExecutor
-    down = threading.Event()
+    from . import traffic
+    down = threading.Event()  # both routers keep failing: stop asking
+    failures = []
+    if roads is None and traffic.model().get("class") and plans:
+        try:
+            roads = traffic.roads_around([start] + [s for p in plans for s in p["stops"]])
+        except Exception as e:  # no street data: plan as before, without the busy-street check
+            print("Busy-street check off: %r" % e)
+    busy = (lambda o: traffic.profile(o, roads)) if roads else None
 
     def fetch(p):
         walked = set()
@@ -328,21 +378,31 @@ def add_paths(plans, start, max_walk_km=None):
             try:
                 if leg["mode"] == "walk":
                     opts = walk_options(a, b, timeout=12, detours=False)
-                    pick = choose_path(opts, walked, spare[0])
-                    if walked and overlap_m(pick, walked) >= WORTH_M:  # still repeating: try side streets
-                        pick = choose_path(walk_options(a, b, timeout=12), walked, spare[0])
+                    pick = choose_path(opts, walked, spare[0], busy)
+                    if ((walked and overlap_m(pick, walked) >= WORTH_M)  # still repeating, or on a busy
+                            or (busy and busy(pick)["busy_m"] > BUSY_MAX_M)):  # street: try side streets
+                        pick = choose_path(walk_options(a, b, timeout=12), walked, spare[0], busy)
                     short = min(opts, key=path_km)
                     spare[0] -= path_km(pick) - path_km(short)
                     if path_km(pick) - path_km(short) > 0.02:  # the times are redone with it (planner.apply_detours)
                         leg["detour_km"] = round(path_km(pick) - path_km(short), 2)
                         leg["short_path"] = short
                     leg["path"] = pick
+                    if busy:  # what's left on busy streets, for the plan's note and score
+                        prof = busy(pick)
+                        leg["busy_m"] = prof["busy_m"]
+                        leg["busy_streets"] = {k: list(v) for k, v in prof["streets"].items()}
                     walked |= walked_cells(pick)
                 else:
                     leg["path"] = path(a, b, leg["mode"], timeout=12)
-            except Exception as e:  # keep the plan; the map draws a straight line instead
-                leg["path_error"] = str(e)[:100]
-                down.set()
+            except Exception as e:  # one more try, the plain way (one path, either router)
+                try:
+                    leg["path"] = path(a, b, leg["mode"], timeout=12)
+                except Exception:  # keep the plan; the map draws a straight line for this leg
+                    leg["path_error"] = str(e)[:100]
+                    failures.append(e)
+                    if len(failures) >= 3:
+                        down.set()
             if stop and stop.get("path"):  # a stroll walks its street too
                 walked |= walked_cells(stop["path"])
 

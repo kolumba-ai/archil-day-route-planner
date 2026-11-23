@@ -47,12 +47,29 @@ The center of the demo has three screens that show this while it runs:
    at that hour of the day. Tolerance is low by default (avoid crime) and the most cautious person
    decides: a walk past a hotspot becomes a bus ride or an Uber/Lyft/taxi, and the plan says why.
 
+7. **Busy streets.** Walks keep off streets with heavy traffic. A street's traffic comes from the
+   counts measured on it where the city publishes them (Portland), else it is estimated from its
+   OpenStreetMap tags (class, lanes, speed limit, one-way, route number) with a model fitted to
+   Portland's 6,500 matched counts (R² 0.72 on log traffic). An S curve turns vehicles a day into
+   how busy a street is, half busy at `PLANNER_BUSY_ADT` (default 20,000). A walk goes at most 100 m
+   along busy streets when any route manages it within 800 m more walking; what's left is noted on the
+   plan and lowers its score.
+
+The agent always asks for the start time when the request doesn't give one; it never assumes one.
+
 Crime data lives in `planner/crime_data/` (Portland, San Francisco, Seattle, Chicago), downloaded
 once from each city's police open data. The app only reads these files; refreshing them is a
 separate service's job:
 
 ```bash
 python3 scripts/update_crime.py            # all cities; or e.g. "portland"
+```
+
+The busy-street model (`planner/traffic_model.json`) and Portland's matched counts
+(`planner/traffic_counts/portland.json`) are made by a script; the app only reads them:
+
+```bash
+python3 scripts/fit_traffic.py             # downloads PBOT counts and OpenStreetMap streets, refits
 ```
 
 ## Run it
@@ -72,6 +89,7 @@ python3 server.py       # then open http://localhost:8765
 | `ANTHROPIC_API_KEY` | Claude Haiku 5.5 reads chat text: the request, the start reply, plan picks like "the second one"; every field is checked, the rules fill gaps. Also Claude web search (Opus 5.5) for the start place and for venues in every city: current hours, closures, dog rules, gluten-free options; the map only gives coordinates |
 | `OPENAI_API_KEY` | OpenAI (`OPENAI_MODEL`, default `gpt-5.4-mini`) reads chat text when there is no Anthropic key |
 | `OVERPASS_CH_KEY` | Find venues (by cuisine, food trucks) and geocode starts with overpass.ch |
+| `PLANNER_BUSY_ADT` | Vehicles a day at which a street counts as half busy (default 20000) |
 | `PLANNER_KEEP_OUTINGS` | How many `data/outing-*` folders to keep (default 20); older ones are deleted when a plan starts |
 | `PLANNER_KEEP_TEST_RUNS` | How many `data/test-runs/*` folders to keep (default 10) |
 

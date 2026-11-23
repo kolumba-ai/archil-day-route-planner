@@ -13,8 +13,8 @@ import time
 
 from planner import planner, routes, search
 
-FULL = "Plan Saturday with Ana and Biscuit starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
-SOLO = "Plan Saturday starting from Noe Valley: coffee, a museum, burritos, beach at sunset"
+FULL = "Plan Saturday with Ana and Biscuit starting from Noe Valley at 10am: coffee, a museum, burritos, beach at sunset"
+SOLO = "Plan Saturday starting from Noe Valley at 10am: coffee, a museum, burritos, beach at sunset"
 SHARED_FIELDS = {"id", "name", "kind", "walking", "food", "activities", "weather", "safety"}
 
 
@@ -310,7 +310,7 @@ def city_chicago(r):
 
 def hills_both_ways(r):
     """M3: the same day in hilly San Francisco, once avoiding hills and once wanting them."""
-    base = "Plan Saturday in San Francisco starting at Mission Dolores Park, coffee and a park, walk at most 3 km, "
+    base = "Plan Saturday in San Francisco starting at Mission Dolores Park at 10am, coffee and a park, walk at most 3 km, "
     box = (37.70, 37.83, -122.52, -122.35)
     flat = _city_check(r, "M3a", "Avoid hills (San Francisco)", base + "avoiding hills",
                        box, ["cafe", "park"], 3.0, "10:00", max_climb=routes.HILLY_AVOID_REQUEST_M)
@@ -344,7 +344,8 @@ def ask_for_start(r):
             "; ".join("%s: asked=%s, explored=%s, said %s" % a for a in asked))
     # Answer the question: the reply is added to the original request, then planning starts.
     import server
-    first, _, _ = run_planner("Plan Saturday in Portland Oregon, coffee and a park, walk at most 2 km", None, timeout=60)
+    first, _, _ = run_planner("Plan Saturday in Portland Oregon at 10am, coffee and a park, walk at most 2 km", None,
+                              timeout=60)
     action, text = server.interpret(first, "Me", "St Stephen's Catholic Church")
     run, _, _ = run_planner(text, None, timeout=240)
     types = [e["type"] for e in run.events]
@@ -473,7 +474,7 @@ def korean_food_truck(r):
 
 
 HAWTHORNE = ("Plan Saturday with Ana and Biscuit starting from St Stephens Catholic Church in Portland Oregon: "
-             "coffee, a park, burritos, and a stroll down Hawthorne Street")
+             "coffee, a park, burritos, and a stroll down Hawthorne Street. Start at 10am.")
 HAWTHORNE_REPLY = "St Stephens Catholic Church at 41st and Salmon in SE Portland OR"
 
 

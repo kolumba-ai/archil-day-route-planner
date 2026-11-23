@@ -28,7 +28,7 @@ Rules:
 - Use only what the message says. Never invent a place, time, limit or stop.
 - "city": the city named in the message, as written (e.g. "Portland Oregon"). Empty string if none.
 - "start_place": the starting point exactly as written in the message, without the city (e.g. from "starting at St Stephens Catholic Church in Portland" -> "St Stephens Catholic Church"). It may be a street address. If the message gives several starting points, use the last one (later text corrects earlier text). Empty string if none.
-- "start_time" / "end_time": 24-hour "HH:MM". end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
+- "start_time" / "end_time": 24-hour "HH:MM", only when the message gives the time (never guess one). end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
 - "max_walk_km": the walking limit in kilometers (convert miles: x 1.609). 0 if none.
 - "day": the weekday, e.g. "Saturday". Empty string if none.
 - "stops": the kinds of places to visit, in the exact order the message names them (the day follows that order), from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park. A kind asked for more than once is listed each time: "a park, then coffee, then another park" -> ["park", "cafe", "park"]; "two parks" -> ["park", "park"]. A cuisine alone ("then Thai") is a food stop.
@@ -130,7 +130,7 @@ def rules_mode():
 
 def blank(text):
     """What a request means before the model fills anything in."""
-    return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
+    return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": None,
             "end_min": None, "cuisines": [], "food_truck": False, "outdoor_seating": False, "return_to_start": False, "max_walk_km": None,
             "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
             "sunset_stop": None, "stroll_street": None, "stop_near": {}, "named_stops": {}, "not_supported": [], "with": [], "dog": False}

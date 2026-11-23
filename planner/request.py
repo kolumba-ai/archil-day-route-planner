@@ -76,6 +76,25 @@ STOP_WORDS = (r"(?:[,;:!?]|(?<!\bSt)(?<!\bMt)(?<!\bAve)(?<!\bDr)\.(?:\s|$)|"
               r"\s+(?:and|with|at|in|start(?:ing)?|walk(?:ing)?|visit(?:ing)?|from|on)\b|$)")
 
 
+def read_clock(text):
+    """A reply to "What time should we start?": "10am", "9:30", "2 pm", "noon", "at 10" -> minutes
+    after midnight, or None. A bare hour is the morning from 7 to 11, the afternoon from 12 to 6."""
+    low = text.lower().strip()
+    if re.search(r"\b(noon|midday)\b", low):
+        return 12 * 60
+    m = re.search(TIME, low)
+    if m:
+        t = _clock(*m.groups())
+        return t if 5 * 60 <= t <= 22 * 60 else None  # "3am" is a slip, not a day out: ask again
+    m = re.search(r"\b([01]?\d|2[0-3])(?:[:.]([0-5]\d))?\b", low)
+    if not m:
+        return None
+    h, mins = int(m.group(1)), int(m.group(2) or 0)
+    if 1 <= h <= 6:
+        h += 12
+    return h * 60 + mins if 7 <= h <= 21 else None
+
+
 def _clock(h, m, ap):
     h = int(h) % 12 + (12 if ap.lower().startswith("p") else 0)
     return h * 60 + int(m or 0)
@@ -99,8 +118,9 @@ def parse(text):
             end_min = t if end_min is None else min(end_min, t)
         low_start = re.sub(rx, " ", low_start)
 
-    # Start time: "start at 10am", "start time is 9:30 am", "from 11am"; default 10:00.
-    start_min = 10 * 60
+    # Start time: "start at 10am", "start time is 9:30 am", "from 11am". None when not given:
+    # the agent asks for it rather than guessing.
+    start_min = None
     m = re.search(r"(?:start(?:ing)?(?: time)?(?:\s+is)?|leave|leaving|from|at)\s+(?:at\s+)?" + TIME, low_start)
     if m:
         start_min = _clock(*m.groups())

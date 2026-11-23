@@ -83,7 +83,7 @@ def combine(profiles, request, start=None, conditions=None):
     return {"request": request, "people": humans, "pets": dogs, "limits": limits,
             "conditions": conditions or load_conditions(),
             "start": start or START,
-            "start_min": request.get("start_min", START_TIME),
+            "start_min": request.get("start_min") or START_TIME,
             "end_min": request.get("end_min"),  # latest finish, if the request gave one
             "return_to_start": bool(request.get("return_to_start")),  # walk back to the start at the end
             "categories": request.get("categories") or list(DEFAULT_CATEGORIES),

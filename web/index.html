@@ -318,6 +318,9 @@ function handle(e) {
     case 'need_start':
       $('map-pills').innerHTML = '<span class="empty" style="padding:0">⚠ Waiting for a starting point</span>';
       break;
+    case 'need_time':
+      $('map-pills').innerHTML = '<span class="empty" style="padding:0">⚠ Waiting for a start time</span>';
+      break;
     case 'plans': plans = e.plans; limits = e.limits || []; selected = 0; renderPlans(); break;
     case 'saved': if (e.path) $('backend').textContent += ' · Saved to ' + e.path; break;
     case 'vote_open': e.voters.forEach(w => {  // picking is by text: reply 1, 2 or 3

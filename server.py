@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 os.environ.setdefault("PLANNER_PROFILES_DIR",
                       os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "profiles"))
 
-from planner import planner, understand  # noqa: E402
+from planner import planner, request, understand  # noqa: E402
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 API_VERSION = 3  # bump when the page needs new endpoints; the page checks it (web/index.html)
@@ -51,6 +51,14 @@ def interpret(run, who, text):
         if ai and ai.get("start_place"):
             place = ai["start_place"].rstrip(".!")
         return "plan", "%s. Starting at %s." % (run.state["original"].rstrip(". "), place)
+    if who == "Me" and run is not None and run.state.get("needs_time") and not fresh:
+        # The answer to "What time should we start?": add it to the original request.
+        t = request.read_clock(text)
+        if t is None:
+            return "hint", "Sorry, I didn't catch a time. What time should we start? For example 10am or 9:30."
+        h, m = divmod(t, 60)
+        return "plan", "%s. Start at %d:%02d%s." % (run.state["original"].rstrip(". "), (h - 1) % 12 + 1, m,
+                                                    "am" if h < 12 else "pm")
     if who == "Ana" and run is not None and run.state.get("awaiting_share"):
         # Ana answers the invitation by typing: yes or no; anything else goes to the caller.
         if re.fullmatch(r"(yes|yep|yeah|y|ok|okay|sure|accept(ed)?|i'?m in|count me in|sounds good|👍)[.! ]*", low):
