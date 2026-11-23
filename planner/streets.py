@@ -178,9 +178,7 @@ def path(a, b, mode, timeout=30):
 CELL_LAT, CELL_LON = 0.00011, 0.00015  # about 12 m: well under a block (Portland's are 61 m)
 SAMPLE_M = 10  # a path is checked every 10 m
 END_SKIP_M = 60  # leaving or reaching a stop may have to use its one street; that doesn't count
-MAX_EXTRA = 0.20  # a fresh street may make a walk 20% longer,
-MIN_EXTRA_KM = 0.15  # or 150 m on a short walk,
-MAX_EXTRA_KM = 0.3  # but never more than 300 m
+MAX_EXTRA_KM = 0.45  # a fresh street may make a walk up to 450 m longer: see more of the city
 WORTH_M = 50  # switch only to save at least 50 m of walking a street again
 
 
@@ -231,16 +229,16 @@ def overlap_m(pts, walked):
     return hit * SAMPLE_M
 
 
-def choose_path(options, walked):
-    """The path that walks the fewest streets again, if it's not much longer than the shortest
-    and saves at least WORTH_M of repeats; otherwise the shortest."""
+def choose_path(options, walked, max_extra_km=MAX_EXTRA_KM):
+    """The path that walks the fewest streets again, if it's at most `max_extra_km` longer than
+    the shortest and saves at least WORTH_M of repeats; otherwise the shortest."""
     options = [o for o in options if o and len(o) >= 2]
     if not options:
         return None
     best = min(options, key=path_km)
     if not walked:
         return best
-    limit = path_km(best) + min(max(path_km(best) * MAX_EXTRA, MIN_EXTRA_KM), MAX_EXTRA_KM)
+    limit = path_km(best) + max(0.0, min(max_extra_km, MAX_EXTRA_KM))
     ok = [o for o in options if path_km(o) <= limit + 1e-9]
     fresh = min(ok, key=lambda o: (overlap_m(o, walked), path_km(o)))
     return fresh if overlap_m(best, walked) - overlap_m(fresh, walked) >= WORTH_M else best
@@ -311,16 +309,18 @@ def _legs(p, start):
     return out
 
 
-def add_paths(plans, start):
+def add_paths(plans, start, max_walk_km=None):
     """Attach a street path to every leg of every plan (in place); plans are fetched in parallel,
     the legs of one plan in order. A walk avoids streets the plan already walked when a
-    parallel street costs little extra (choose_path). If the router refuses or times out, stop
+    parallel street costs at most MAX_EXTRA_KM more (choose_path), and never past
+    `max_walk_km` for the whole plan. If the router refuses or times out, stop
     asking: the map draws straight lines instead, so an outage costs seconds, not minutes."""
     from concurrent.futures import ThreadPoolExecutor
     down = threading.Event()
 
     def fetch(p):
         walked = set()
+        spare = [max_walk_km - p["walk_km"] if max_walk_km else MAX_EXTRA_KM * 10]  # km of detours allowed
         for leg, a, b, stop in _legs(p, start):
             if down.is_set():
                 leg["path_error"] = "router unavailable"
@@ -328,12 +328,14 @@ def add_paths(plans, start):
             try:
                 if leg["mode"] == "walk":
                     opts = walk_options(a, b, timeout=12, detours=False)
-                    pick = choose_path(opts, walked)
+                    pick = choose_path(opts, walked, spare[0])
                     if walked and overlap_m(pick, walked) >= WORTH_M:  # still repeating: try side streets
-                        pick = choose_path(walk_options(a, b, timeout=12), walked)
-                    shortest = min(path_km(o) for o in opts)
-                    if path_km(pick) - shortest > 0.02:
-                        leg["detour_km"] = round(path_km(pick) - shortest, 2)
+                        pick = choose_path(walk_options(a, b, timeout=12), walked, spare[0])
+                    short = min(opts, key=path_km)
+                    spare[0] -= path_km(pick) - path_km(short)
+                    if path_km(pick) - path_km(short) > 0.02:  # the times are redone with it (planner.apply_detours)
+                        leg["detour_km"] = round(path_km(pick) - path_km(short), 2)
+                        leg["short_path"] = short
                     leg["path"] = pick
                     walked |= walked_cells(pick)
                 else:
@@ -343,13 +345,6 @@ def add_paths(plans, start):
                 down.set()
             if stop and stop.get("path"):  # a stroll walks its street too
                 walked |= walked_cells(stop["path"])
-        extra = sum(l.get("detour_km", 0) for l, _, _, _ in _legs(p, start))
-        if extra:  # count the side streets in the walking, and say why the route bends
-            for l, _, _, _ in _legs(p, start):
-                l["km"] = round(l["km"] + l.get("detour_km", 0), 2)
-            p["walk_km"] = round(p["walk_km"] + extra, 2)
-            p.setdefault("notes", []).append(
-                "Takes side streets so you don't walk the same street twice (+%d m)" % round(extra * 1000))
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(fetch, plans))

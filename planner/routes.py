@@ -163,12 +163,14 @@ def leg(a, b, pace_kmh, streets=None, ctx=None, minute=None):
     on_streets = bool(streets) and kb in streets["walk_km"].get(ka, {})
     d = streets["walk_km"][ka][kb] if on_streets else km(a, b) * 1.3
     up, hills = climb_m(a, b, ctx)
-    walk_min = d / pace_kmh * 60 + up / 10  # +1 min per 10 m climbed
+    # A side street the map route takes to avoid walking a street twice (planner.apply_detours)
+    d_walk = d + ((ctx or {}).get("detour_km") or {}).get((ka, kb), 0)
+    walk_min = d_walk / pace_kmh * 60 + up / 10  # +1 min per 10 m climbed
     unsafe = None
     if walk_min <= 35:
         tolerance = ((ctx or {}).get("limits") or {}).get("crime_tolerance", "low")
         spot = crime.hotspot((ctx or {}).get("crime"), a, b, minute if minute is not None else 12 * 60, tolerance)
-        walk = {"mode": "walk", "km": round(d, 2), "min": round(walk_min), "climb_m": up, "hills": hills,
+        walk = {"mode": "walk", "km": round(d_walk, 2), "min": round(walk_min), "climb_m": up, "hills": hills,
                 "streets": on_streets}
         if not spot:
             return walk

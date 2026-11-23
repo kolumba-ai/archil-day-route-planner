@@ -1129,11 +1129,14 @@ class FreshStreetsTests(unittest.TestCase):
         walked = streets.walked_cells(self.line((0, 0), (400, 0), (400, 300)))
         back = self.line((400, 300), (400, 0), (200, 0))  # 500 m, 300 of them walked
         fresh = self.line((400, 300), (300, 300), (300, 0), (200, 0))  # 500 m, none walked
-        longer = self.line((400, 300), (400, 400), (100, 400), (100, 0), (200, 0))  # 900 m: too far
+        longer = self.line((400, 300), (400, 500), (100, 500), (100, 0), (200, 0))  # 1100 m: 600 m more, too far
+        around = self.line((400, 300), (300, 300), (300, -100), (200, -100), (200, 0))  # 700 m: 200 m more, fresh
         self.assertGreaterEqual(streets.overlap_m(back, walked), 200)
         self.assertLess(streets.overlap_m(fresh, walked), streets.WORTH_M)
         self.assertIs(streets.choose_path([back, fresh], walked), fresh)
         self.assertIs(streets.choose_path([back, longer], walked), back)  # the only other way is far longer
+        self.assertIs(streets.choose_path([back, around], walked), around)  # 200 m more to see new streets
+        self.assertIs(streets.choose_path([back, around], walked, max_extra_km=0.1), back)  # walking limit nearly reached
         self.assertIs(streets.choose_path([longer, back], set()), back)  # nothing walked yet: shortest
         self.assertEqual(streets.overlap_m(self.line((400, 300), (300, 300), (300, 0), (400, 0), (500, 0)), walked)
                          // 10 * 10, 70)  # crossing or touching a walked street hardly counts; walking along it does
@@ -1158,6 +1161,47 @@ class FreshStreetsTests(unittest.TestCase):
         self.assertNotIn("detour_km", plan["legs"][1])
         self.assertEqual(plan["walk_km"], 1.25)
         self.assertEqual(plan["notes"], [])
+
+
+class DetourTimeTests(unittest.TestCase):
+    """Z: a side street taken to avoid walking a street twice counts in times, km, steps and calories."""
+
+    def plan_and_ctx(self, extra=""):
+        req = request.parse(AnyCityTests.BASE + extra)
+        c = routes.combine(profiles("me"), req, start=TOWN_START, conditions=TOWN_WEATHER)
+        c["elev"] = {routes.key({"lat": la, "lon": lo}): e for (la, lo), e in TOWN_ELEV.items()}
+        pool = [("b", it) for fixed in all_branches(TOWN, c) for it in routes.route_branch(fixed, TOWN, c)[0]]
+        plan = copy.deepcopy(routes.pick_diverse(pool, 1)[0][1])
+        for i, l in enumerate(plan["legs"]):
+            l["path"] = [[0, i], [1, i]]  # stand-ins for the map's street paths
+        plan["legs"][0].update(detour_km=0.4, short_path=[[0, 9], [1, 9]])
+        return plan, c
+
+    def test_Z3_detour_moves_the_times_and_counts_the_walking(self):
+        from planner import fitness
+        plan, c = self.plan_and_ctx()
+        old = copy.deepcopy(plan)
+        planner.apply_detours(plan, c, TOWN)
+        leg, was = plan["legs"][0], old["legs"][0]
+        self.assertAlmostEqual(leg["km"], was["km"] + 0.4, places=2)
+        self.assertEqual(leg["min"], was["min"] + round(0.4 / c["limits"]["pace_kmh"] * 60))
+        self.assertEqual(leg["path"], [[0, 0], [1, 0]])  # the side-street path stays on its leg
+        self.assertAlmostEqual(plan["walk_km"], old["walk_km"] + 0.4, places=2)
+        self.assertGreater(plan["travel_min"], old["travel_min"])
+        self.assertGreater(routes.to_min(plan["stops"][0]["arrive"]), routes.to_min(old["stops"][0]["arrive"]))
+        self.assertGreater(fitness.typical_steps(plan), fitness.typical_steps(old))
+        self.assertGreater(fitness.typical_kcal(plan), fitness.typical_kcal(old))
+        self.assertIn("Takes side streets so you don't walk the same street twice (+400 m, +%d min)"
+                      % (leg["min"] - was["min"]), plan["notes"])
+
+    def test_Z4_detour_dropped_when_it_breaks_a_limit(self):
+        plan, c = self.plan_and_ctx()
+        c["end_min"] = routes.to_min(plan["end"])  # no minute to spare
+        old = copy.deepcopy(plan)
+        planner.apply_detours(plan, c, TOWN)
+        self.assertEqual(plan["legs"][0]["path"], [[0, 9], [1, 9]])  # back on the shortest streets
+        self.assertNotIn("detour_km", plan["legs"][0])
+        self.assertEqual((plan["end"], plan["walk_km"], plan["notes"]), (old["end"], old["walk_km"], old["notes"]))
 
 
 class WeatherSourceTests(unittest.TestCase):

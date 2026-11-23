@@ -686,6 +686,45 @@ def limits_view(ctx, req):
     return [{"label": a, "value": b} for a, b in rows]
 
 
+DETOUR_FIELDS = ("stops", "legs", "walk_km", "climb_m", "travel_min", "idle_min", "return_leg", "ride_cost",
+                 "end", "notes", "weather_at_end", "scores", "group_score")
+
+
+def apply_detours(plan, ctx, candidates):
+    """The map route may take side streets so nobody walks a street twice (streets.add_paths).
+    Plan the day again with those longer walks, so times, distance, steps and calories include
+    them. If that breaks a limit (a closed stop, the finish time, the walking limit), take the
+    shortest streets instead."""
+    legs = plan["legs"] + ([plan["return_leg"]] if plan.get("return_leg") else [])
+    if not any(l.get("detour_km") for l in legs):
+        return
+
+    def undo():
+        for l in legs:
+            if l.get("detour_km"):
+                l["path"] = l.pop("short_path")
+                del l["detour_km"]
+
+    found = {c: {v["name"]: v for v in vs} for c, vs in candidates.items()}
+    try:
+        stops = [(s["category"], found[s["category"]][s["name"]]) for s in plan["stops"]]
+    except KeyError:  # can't rebuild the day (shouldn't happen): keep the times as planned
+        return undo()
+    extra = {(routes.key(a), routes.key(b)): l["detour_km"]
+             for l, a, b, _ in streets._legs(plan, ctx.get("start") or routes.START) if l.get("detour_km")}
+    redo = routes.simulate(stops, dict(ctx, detour_km=extra))
+    new_legs = redo["legs"] + ([redo["return_leg"]] if redo.get("return_leg") else [])
+    if redo["violations"] or [l["mode"] for l in new_legs] != [l["mode"] for l in legs]:
+        return undo()
+    for old, new in zip(legs, new_legs):  # the map paths stay with their legs
+        new.update({k: old[k] for k in ("path", "path_error", "detour_km", "short_path") if k in old})
+    plan.update({k: redo[k] for k in DETOUR_FIELDS if k in redo})
+    km = sum(extra.values())
+    mins = sum(n["min"] - o["min"] for o, n in zip(legs, new_legs))
+    plan["notes"].append("Takes side streets so you don't walk the same street twice (+%d m, +%d min)"
+                         % (round(km * 1000), mins))
+
+
 def finish(run, req, disk, work, chosen):
     reasons = run.state.get("reasons") or []
     plans = [dict(it, branch=name, rank=i, day=req["day"], city=req.get("city") or "San Francisco",
@@ -694,7 +733,8 @@ def finish(run, req, disk, work, chosen):
                   why=reasons[i - 1] if i <= len(reasons) else "")
              for i, (name, it) in enumerate(chosen, 1)]
     if plans and run.state.get("ctx", {}).get("streets"):
-        streets.add_paths(plans, run.state["ctx"]["start"])  # street-following lines for the map
+        streets.add_paths(plans, run.state["ctx"]["start"],  # street-following lines for the map
+                          max_walk_km=(run.state["ctx"].get("limits") or {}).get("max_km"))
         straight = sum(1 for p in plans for l in p["legs"] + ([p["return_leg"]] if p.get("return_leg") else [])
                        if not l.get("path"))
         if straight:
@@ -703,8 +743,16 @@ def finish(run, req, disk, work, chosen):
     elif plans and streets.enabled():
         run.say("me", "Street routing is unavailable right now: the map shows straight lines and walking times "
                       "are estimates.", agent=True)
-    for p in plans:  # again, with any side streets taken to avoid walking a street twice
+    def explained():  # the opening sentence of each plan's "why", from its numbers
+        fastest = min((p["travel_min"] for p in plans), default=None)
+        return [decide.explain(p, plans[0], i, fastest) for i, p in enumerate(plans, 1)]
+    before = explained()
+    for p in plans:  # with any side streets taken to avoid walking a street twice
+        apply_detours(p, run.state.get("ctx") or {}, run.state.get("candidates") or {})
         p.update(steps_typical=fitness.typical_steps(p), kcal_typical=fitness.typical_kcal(p))
+    for p, old, new in zip(plans, before, explained()):  # "32 min getting around" -> "40 min"
+        if old != new and p.get("why", "").startswith(old):
+            p["why"] = new + p["why"][len(old):]
     name_routes(plans, req)
     limits = limits_view(run.state.get("ctx") or {}, req)
     disk.write_json(work, "plans.json", plans)
