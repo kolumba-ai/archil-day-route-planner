@@ -29,6 +29,16 @@ def plan_facts(p):
         return p.get("name") or "plan"
 
 
+def in_their_language(run, text):
+    """The agent's words in the conversation's language (the request's), English if unknown."""
+    return understand.translate(text, (run.state.get("lang") if run else None))
+
+
+def again(earlier, text):
+    """The earlier request with a change added in the person's own words."""
+    return "%s. %s" % (earlier.rstrip(". "), text.strip()) if earlier else text.strip()
+
+
 def interpret(run, who, text):
     """Turn a typed message into an action: a new plan, a pick (a plan's number), or a hint.
 
@@ -41,7 +51,10 @@ def interpret(run, who, text):
         # The answer to "Here's what I understood ... Reply yes": go ahead, or apply the change
         # (the model re-reads the request with the correction and asks again).
         if re.fullmatch(r"(yes|yep|yeah|y|ok|okay|sure|go|go ahead|send( it)?|confirm(ed)?|correct|"
-                        r"looks good|sounds good|perfect|👍)[.! ]*", low):
+                        r"looks good|sounds good|perfect|👍)[.! ]*", low):  # quick, no model needed
+            return "plan_confirmed", run.state["original"]
+        ai = understand.read_reply(text, "Here's what I understood... Reply yes to go ahead, or tell me what to change.")
+        if ai and ai.get("answer") == "yes":  # "sí", "dale", "oui": any language
             return "plan_confirmed", run.state["original"]
         return "plan", "%s. %s" % (run.state["original"].rstrip(". "), text.strip())
     if who == "Me" and run is not None and run.state.get("needs_start") and not fresh:
@@ -54,6 +67,10 @@ def interpret(run, who, text):
     if who == "Me" and run is not None and run.state.get("needs_time") and not fresh:
         # The answer to "What time should we start?": add it to the original request.
         t = request.read_clock(text)
+        if t is None:  # "a las diez", "mediodía": the model reads it
+            ai = understand.read_reply(text, "What time should we start?")
+            m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", ((ai or {}).get("start_time") or "").strip())
+            t = int(m.group(1)) * 60 + int(m.group(2)) if m and 5 * 60 <= int(m.group(1)) * 60 <= 22 * 60 else None
         if t is None:
             return "hint", "Sorry, I didn't catch a time. What time should we start? For example 10am or 9:30."
         h, m = divmod(t, 60)
@@ -65,6 +82,9 @@ def interpret(run, who, text):
             return "share", True
         if re.fullmatch(r"(no|nope|n|decline(d)?|can'?t|cannot|not this time|pass|👎)[.! ]*", low):
             return "share", False
+        ai = understand.read_reply(text, "Will you join the day out and share your limits? Yes or no.")
+        if ai and ai.get("answer") in ("yes", "no"):  # "¡sí, claro!", "no puedo": any language
+            return "share", ai["answer"] == "yes"
         return "relay", text.strip()
     if run is not None and not re.fullmatch(r"(?:plan\s*)?#?\s*[1-9]\s*[.!]?", low):
         # Anything but a bare number: Claude reads it in context (a pick in words, a new or changed
@@ -77,6 +97,12 @@ def interpret(run, who, text):
             intent = ai.get("intent")
             if intent == "pick" and plans and not run.state.get("decided") and 1 <= int(ai.get("plan") or 0) <= len(plans):
                 return "vote", int(ai["plan"])
+            if intent == "change" and earlier:
+                # Plan the same request again with the new condition added in their own words
+                # ("I want to burn at least 300 calories"): nothing of the earlier request is lost.
+                if who == "Me":
+                    return "plan", again(earlier, text)
+                return "relay", text.strip()  # Ana suggests a change: her friend decides
             if intent == "new_plan":
                 if who == "Me":
                     return "plan", ai["request"].strip()
@@ -87,6 +113,8 @@ def interpret(run, who, text):
                 return "hint", ai["reply"].strip()
     if who == "Me" and (not has_plans or fresh):
         return "plan", text
+    if who == "Me" and has_plans and any(request.goals(text).values()):  # no model: a fitness goal is a change
+        return "plan", again((run.state.get("req") or {}).get("text") or "", text)
     if not has_plans:
         return "hint", "No plans yet. Ask your friend to start one."
     n = len(run.state["plans"])
@@ -217,11 +245,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"action": "share"})
                 if action == "relay":  # a message for the other person: shown on their phone
                     run.say("me" if who == "Ana" else "ana", "💬 %s: %s" % ("Ana" if who == "Ana" else "Your friend", arg),
-                            agent=True)
-                    return self._json(200, {"action": "relay", "text": "Sent to %s." % ("your friend" if who == "Ana" else "Ana")})
+                            agent=True, verbatim=True)  # their own words, as they wrote them
+                    return self._json(200, {"action": "relay", "text": in_their_language(
+                        run, "Sent to %s." % ("your friend" if who == "Ana" else "Ana"))})
             except ValueError as e:
-                return self._json(200, {"action": "hint", "text": "I couldn't do that: %s." % e})
-            self._json(200, {"action": "hint", "text": arg})
+                return self._json(200, {"action": "hint", "text": in_their_language(run, "I couldn't do that: %s." % e)})
+            self._json(200, {"action": "hint", "text": in_their_language(run, arg)})
         else:
             self._json(404, {"error": "not found"})
 

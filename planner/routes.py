@@ -234,8 +234,73 @@ def outdoor_seating(v):
     return None
 
 
+LOOP_STOPS = ("park", "waterfront", "beach")  # where walking loops can be added for a fitness goal
+LOOP_MARGIN = 1.05  # a little more than the goal needs, since the estimate is approximate
+
+
+def organizer(ctx):
+    """The person planning (whose fitness goal it is): the "me" profile, else the first person."""
+    people = ctx.get("people") or []
+    return next((p for p in people if p.get("id") == "me"), people[0] if people else {})
+
+
+def goal_shortfall_km(it, ctx):
+    """How many more km the organizer must walk to reach the request's fitness goal (calories,
+    steps or distance): 0 when it is reached or there is none."""
+    req = ctx.get("request") or {}
+    if not any(req.get(k) for k in ("min_kcal", "min_steps", "min_walk_km")):
+        return 0.0
+    from . import fitness
+    body = organizer(ctx).get("body") or {}
+    meters = fitness.walking_totals(it)[0]
+    need = 0.0
+    if req.get("min_walk_km"):
+        need = max(need, req["min_walk_km"] - meters / 1000.0)
+    if req.get("min_steps"):
+        need = max(need, (req["min_steps"] * fitness.stride_m(body) - meters) / 1000.0)
+    if req.get("min_kcal"):
+        weight = body.get("weight_kg") or fitness.TYPICAL_WEIGHT_KG
+        load = body.get("backpack_kg") or 0
+        have = fitness.pandolf_kcal(it, weight, load)
+        v = ctx["limits"]["pace_kmh"] / 3.6
+        per_km = fitness.pandolf_watts(weight, load, v, 0) * (1000 / v) / fitness.J_PER_KCAL
+        need = max(need, (req["min_kcal"] - have) / per_km)
+    return max(0.0, need)
+
+
+def goal_text(ctx):
+    req = ctx.get("request") or {}
+    return " and ".join(x for x in (
+        req.get("min_kcal") and "burn at least %d kcal" % req["min_kcal"],
+        req.get("min_steps") and "walk at least %s steps" % format(int(req["min_steps"]), ","),
+        req.get("min_walk_km") and "walk at least %g km" % req["min_walk_km"]) if x)
+
+
 def simulate(stops, ctx):
-    """stops: list of (category, venue) in visiting order. Returns an itinerary with scores."""
+    """stops: list of (category, venue) in visiting order. Returns an itinerary with scores.
+
+    With a fitness goal (request min_kcal, min_steps or min_walk_km) that the walking between stops
+    doesn't reach, walking loops are added at the park, waterfront or beach stops (split evenly)
+    and the day is planned again with them; the goal is a hard limit, like the walking limit."""
+    it = _simulate(stops, ctx)
+    need = goal_shortfall_km(it, ctx)
+    if need <= 0:
+        return it
+    spots = [i for i, (c, _) in enumerate(stops) if c in LOOP_STOPS]
+    if not spots:
+        it["violations"].append("can't %s: no park or waterfront to add loops at" % goal_text(ctx))
+        return it
+    each = math.ceil(need * LOOP_MARGIN / len(spots) * 10) / 10.0  # in 100 m steps
+    it = _simulate(stops, ctx, {i: each for i in spots})
+    if goal_shortfall_km(it, ctx) > 0.05:
+        it["violations"].append("can't %s even with loops" % goal_text(ctx))
+    it["notes"].append("Walk %s to %s" % (" and ".join(
+        "%.1f km of loops in %s" % (each, stops[i][1]["name"]) for i in spots), goal_text(ctx)))
+    return it
+
+
+def _simulate(stops, ctx, loops=None):
+    """One pass of `simulate`; loops: {stop index: km of walking loops there}."""
     lim = ctx["limits"]
     cond = ctx["conditions"]
     sunset = to_min(cond["sunset"])
@@ -246,7 +311,7 @@ def simulate(stops, ctx):
     here = start
     legs, timeline, violations, notes = [], [], [], []
     walk_km = climb = 0
-    for cat, v in stops:
+    for i, (cat, v) in enumerate(stops):
         lg = leg(here, v, lim["pace_kmh"], ctx.get("streets"), ctx, t)
         if lg.get("avoids"):
             notes.append("%s to %s instead of walking: %s" % (
@@ -271,6 +336,11 @@ def simulate(stops, ctx):
             dwell = min(lim["museum_max_min"], 90) if v.get("kind") == "museum" else DWELL["outdoor_alternative"]
         else:
             dwell = DWELL.get(cat, 45)
+        loop_km = (loops or {}).get(i, 0)
+        if loop_km:  # walking loops for a fitness goal, on top of the usual time there
+            loop_min = round(loop_km / lim["pace_kmh"] * 60)
+            dwell += loop_min
+            walk_km += loop_km
         leave = round_departure(arrive, arrive + dwell, to_min(v["close"]))
         if arrive < to_min(v["open"]) or leave > to_min(v["close"]):
             violations.append("%s is closed then (%s-%s)" % (v["name"], v["open"], v["close"]))
@@ -297,6 +367,8 @@ def simulate(stops, ctx):
                 notes.append("Couldn't confirm outdoor seating at %s; check before you go" % v["name"])
         stop = {"category": cat, "name": v["name"], "lat": v["lat"], "lon": v["lon"],
                 "arrive": hhmm(arrive), "leave": hhmm(leave), "source": v.get("source", "")}
+        if loop_km:
+            stop.update(loop_km=loop_km, loop_min=loop_min)
         if cat == "stroll":
             stop.update(stroll_km=v.get("stroll_km"), stroll_min=dwell - STROLL_BROWSE_MIN, path=v.get("path"),
                         end_lat=v["end_lat"], end_lon=v["end_lon"], shops=v.get("shops"))

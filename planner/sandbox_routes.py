@@ -104,7 +104,7 @@ print("ROUTES " + json.dumps({
 '''
 
 
-SANDBOX_FILES = ("__init__.py", "env.py", "routes.py", "crime.py", "route_worker.py", "conditions.json")
+SANDBOX_FILES = ("__init__.py", "env.py", "routes.py", "crime.py", "fitness.py", "route_worker.py", "conditions.json")
 
 
 def _code_tarball():

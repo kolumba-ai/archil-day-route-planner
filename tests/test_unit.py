@@ -1311,6 +1311,163 @@ class BusyStreetTests(unittest.TestCase):
         self.assertAlmostEqual(plan["group_score"], 0.8 - 60 * planner.BUSY_SCORE_PER_M, places=3)
 
 
+class FitnessGoalTests(unittest.TestCase):
+    """O: a fitness goal ("burn at least 300 calories") is a limit the plans meet, and adding one after the
+    plans are shown plans the same request again with it."""
+
+    def town(self, extra):
+        from planner import fitness
+        req = request.parse("Plan Saturday in Testville starting at Test Church at 9am, coffee and a park, "
+                            "walk at most 6 km" + extra)
+        c = routes.combine(profiles("me"), req, start=TOWN_START, conditions=TOWN_WEATHER)
+        c["elev"] = {routes.key({"lat": la, "lon": lo}): e for (la, lo), e in TOWN_ELEV.items()}
+        pool = [("b", it) for fixed in all_branches(TOWN, c) for it in routes.route_branch(fixed, TOWN, c)[0]]
+        body = routes.organizer(c).get("body") or {}
+        return [it for _, it in routes.pick_diverse(pool)], body, fitness
+
+    def test_O1_reads_goals(self):
+        g = request.goals
+        self.assertEqual(g("I want to burn at least 300 calories. repeat the route.")["min_kcal"], 300)
+        self.assertEqual(g("let's get 10,000 steps")["min_steps"], 10000)
+        self.assertEqual(g("walk at least 3 miles")["min_walk_km"], 4.83)
+        none = {"min_kcal": None, "min_steps": None, "min_walk_km": None}
+        for limit in ("walk at most 3 km", "Must not walk more than 3km.", "don't walk more than 2 miles",
+                      "no more than 10,000 steps", "at most 300 calories please"):
+            self.assertEqual(g(limit), none, limit)  # limits, not goals
+        self.assertEqual(g("I can't walk more than 3 km but want to burn 200 calories")["min_kcal"], 200)
+        r = request.parse(TWO_PARKS + " Start at 10am, and finally get back again to St Stephen's Catholic Church.")
+        self.assertTrue(r["return_to_start"])
+        from planner import understand
+        text = TWO_PARKS + " I want to burn at least 300 calories."
+        ai = {"min_kcal": 300, "min_steps": 0, "min_walk_km": 0, "not_supported": ["burn at least 300 calories"]}
+        r = understand.merge(text, ai, understand.blank(text))
+        self.assertEqual((r["min_kcal"], r["not_supported"]), (300, []))  # planned, not "left out"
+        self.assertIsNone(understand.merge(text, {"min_kcal": 450}, understand.blank(text))["min_kcal"])  # not said
+        said = planner.understood(dict(request.parse(text), start_min=600), TOWN_START, "Portland")
+        self.assertIn("🔥 Your goal: burn at least 300 kcal", said)
+
+    def test_O2_loops_in_the_park_reach_the_goal(self):
+        plain, body, fitness = self.town("")
+        goal = int(fitness.estimate(plain[0], body)["kcal"]) + 150
+        plans, body, fitness = self.town(", I want to burn at least %d calories" % goal)
+        self.assertTrue(plans)
+        for p in plans:
+            self.assertGreaterEqual(fitness.estimate(p, body)["kcal"], goal)
+            park = next(s for s in p["stops"] if s["category"] == "park")
+            self.assertGreater(park["loop_km"], 0)
+            self.assertTrue(any(n.startswith("Walk %.1f km of loops in %s" % (park["loop_km"], park["name"]))
+                                for n in p["notes"]))
+            self.assertLessEqual(p["walk_km"], 6)
+
+    def test_O3_goal_out_of_reach_means_no_plan(self):
+        plans, _, _ = self.town(", I want to burn at least 2000 calories")  # far past the 6 km limit
+        self.assertEqual(plans, [])
+
+    def test_O4_adding_a_goal_plans_the_same_request_again(self):
+        import server
+        from unittest import mock
+        from planner import understand
+        run = planner.Run()
+        earlier = TWO_PARKS + " Start at 10am."
+        run.state.update(req={"text": earlier}, plans=[{"name": "A", "stops": [], "walk_km": 3.1}])
+        with mock.patch.object(understand, "read_turn",
+                               lambda t, e, p, w: {"intent": "change", "plan": 0, "request": "", "reply": ""}):
+            action, text = server.interpret(run, "Me", "I want to burn at least 300 calories. repeat the route.")
+        self.assertEqual(action, "plan")
+        self.assertEqual(text, earlier.rstrip(".") + ". I want to burn at least 300 calories. repeat the route.")
+        with mock.patch.object(understand, "read_turn", lambda t, e, p, w: None):  # no model: the rules see the goal
+            self.assertEqual(server.interpret(run, "Me", "burn 250 kcal please")[1],
+                             earlier.rstrip(".") + ". burn 250 kcal please")
+
+
+    def test_O5_route_sandboxes_get_every_module_they_import(self):
+        import re
+        from planner import sandbox_routes
+        shipped = {f[:-3] for f in sandbox_routes.SANDBOX_FILES if f.endswith(".py")}
+        here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "planner")
+        for name in shipped:
+            with open(os.path.join(here, name + ".py")) as f:
+                for group in re.findall(r"from \. import ([\w, ]+)", f.read()):
+                    for module in (m.strip() for m in group.split(",")):
+                        self.assertIn(module, shipped, "%s.py imports %s, which the sandboxes don't get" % (name, module))
+
+
+SPANISH = ("Planea el viernes con Ana y Biscuit desde la iglesia St Stephen's Catholic Church en Portland OR. "
+           "Un parque, luego comida tailandesa con mesas en la terraza, otro parque y café. Empezamos a las 10am.")
+
+
+class AnyLanguageTests(unittest.TestCase):
+    """I: the conversation works in any language: the model reads it, code checks only what holds in any
+    language (quotes from the message, numbers, places), and the agent answers in the person's language."""
+
+    def test_I1_quotes_from_the_message_not_english_words(self):
+        from planner import understand
+        ai = {"stops": ["park", "food", "park", "cafe"], "cuisines": ["thai"], "outdoor_seating": True,
+              "outdoor_seating_words": "mesas en la terraza", "repeat_words": "otro parque", "language": "es"}
+        r = understand.merge(SPANISH, ai, understand.blank(SPANISH))
+        self.assertEqual(r["categories"], ["park", "food", "park", "cafe"])
+        self.assertTrue(r["outdoor_seating"])
+        self.assertEqual(r["language"], "es")
+        # A quote that isn't in the message proves nothing.
+        r = understand.merge(SPANISH, dict(ai, outdoor_seating_words="patio", repeat_words="dos parques"),
+                             understand.blank(SPANISH))
+        self.assertFalse(r["outdoor_seating"])
+        self.assertEqual(r["categories"], ["park", "food", "cafe"])
+
+    def replies(self, answer="", start_time=""):
+        from unittest import mock
+        from planner import understand
+        p = mock.patch.object(understand, "read_reply",
+                              lambda t, asked: {"start_place": "", "plan": 0, "answer": answer, "start_time": start_time})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_I2_confirm_in_any_language(self):
+        import server
+        run = planner.Run()
+        run.state.update(needs_confirm=True, original=SPANISH)
+        self.replies(answer="yes")
+        self.assertEqual(server.interpret(run, "Me", "¡Sí, perfecto!"), ("plan_confirmed", SPANISH))
+        self.replies(answer="other")
+        self.assertEqual(server.interpret(run, "Me", "mejor sin café"), ("plan", SPANISH.rstrip(".") + ". mejor sin café"))
+
+    def test_I3_ana_answers_in_any_language(self):
+        import server
+        run = planner.Run()
+        run.state["awaiting_share"] = True
+        self.replies(answer="yes")
+        self.assertEqual(server.interpret(run, "Ana", "¡Claro que sí!"), ("share", True))
+        self.replies(answer="no")
+        self.assertEqual(server.interpret(run, "Ana", "Esta vez no puedo"), ("share", False))
+        self.replies(answer="other")
+        self.assertEqual(server.interpret(run, "Ana", "¿Llevo algo?"), ("relay", "¿Llevo algo?"))
+
+    def test_I4_start_time_in_words(self):
+        import server
+        run = planner.Run()
+        run.state.update(needs_time=True, original="Planea el viernes en Portland desde la iglesia: un parque")
+        self.replies(start_time="10:30")
+        action, text = server.interpret(run, "Me", "a las diez y media")
+        self.assertEqual(action, "plan")
+        self.assertTrue(text.endswith("Start at 10:30am."))
+        self.replies(start_time="03:00")  # not a day out: asked again
+        self.assertEqual(server.interpret(run, "Me", "a las tres de la madrugada")[0], "hint")
+
+    def test_I5_agent_answers_in_their_language(self):
+        from unittest import mock
+        from planner import understand
+        run = planner.Run()
+        run.state["lang"] = "es"
+        with mock.patch.object(understand, "translate", lambda text, lang: "[%s] %s" % (lang, text)):
+            run.say("me", "What time should we start?", agent=True)
+            run.say("ana", "💬 Your friend: see you there", agent=True, verbatim=True)  # their words, untouched
+            run.say("me", "Plan Saturday...")  # what the person typed, untouched
+        said = [e["text"] for e in run.events if e["type"] == "message"]
+        self.assertEqual(said, ["[es] What time should we start?", "💬 Your friend: see you there", "Plan Saturday..."])
+        self.assertNotIn("verbatim", run.events[-2])
+        self.assertEqual(understand.translate("Hello", "es"), "Hello")  # no model in the tests: unchanged
+
+
 class WeatherSourceTests(unittest.TestCase):
     """X: the forecast keeps working when a weather service doesn't answer."""
 

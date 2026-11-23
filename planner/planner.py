@@ -98,6 +98,13 @@ class Run:
             self.cond.notify_all()
 
     def say(self, phone, text, **extra):
+        """A chat message on a phone. The agent's own messages are written in the conversation's
+        language (the request's, planner/understand.py translate); people's words are passed on
+        as they wrote them (verbatim=True)."""
+        if extra.get("agent") and not extra.pop("verbatim", False) and self.state.get("lang"):
+            from .understand import translate
+            text = translate(text, self.state["lang"])
+        extra.pop("verbatim", None)
         self.emit("message", phone=phone, text=text, **extra)
 
 
@@ -217,12 +224,17 @@ def understood(req, start, city):
     if req.get("end_min"):
         limits.append(("back at the start by %s" if req.get("return_to_start") else "done by %s")
                       % routes.hhmm(req["end_min"]))
+    if req.get("return_to_start") and not req.get("end_min"):
+        limits.append("ending back at the start")
     limits.append("walking up to %g km" % req["max_walk_km"] if req["max_walk_km"] else "your usual walking limit")
     if req.get("avoid_hills"):
         limits.append("avoiding hills")
     if req.get("prefer_hills"):
         limits.append("with some hills")
     lines.append("🚶 " + ", ".join(limits))
+    goal = routes.goal_text({"request": req})
+    if goal:
+        lines.append("🔥 Your goal: %s (walking loops in a park are added if needed)" % goal)
     who = (["Ana"] if "ana" in req["with"] else []) + (["Biscuit 🐕"] if req["dog"] else [])
     lines.append("👥 With " + " and ".join(who) if who else "👤 Just you")
     if req.get("not_supported"):  # never drop part of the request silently
@@ -275,6 +287,7 @@ def plan(run, text, confirmed=True):
                       "anyone. Please try again." % str(e)[:90], agent=True)
         run.emit("done", ok=False, reason="llm_failed")
         return
+    run.state["lang"] = req.get("language") or None  # the agent answers in the request's language
     root = os.path.join(DATA, "outing-" + run.id)
     shutil.rmtree(root, ignore_errors=True)
     # Only the newest outings stay on disk (the one starting now always does).
@@ -332,8 +345,8 @@ def plan(run, text, confirmed=True):
     if "ana" in req["with"]:
         run.emit("share_request", frm="Me", to="Ana",
                  asks=["walking limits", "hills", "diet", "museum tolerance", "weather tolerance", "street crime tolerance"])
-        run.say("ana", "Your friend is inviting you to several activities on Saturday, "
-                       "taking into account your limits. Accept?", agent=True, ask=True)
+        run.say("ana", "Your friend is inviting you to several activities on %s in %s, "
+                       "taking into account your limits. Accept?" % (req["day"], city), agent=True, ask=True)
         run.say("me", "📨 Invitation sent to Ana. Waiting for her answer…", agent=True)
         run.state["awaiting_share"] = True
         run.share_event.wait(timeout=SHARE_TIMEOUT)
@@ -509,6 +522,9 @@ def routes_on_sandboxes(run, ctx, candidates, specs):
     run.say("me", "Forking %d Archil sandboxes, one per route..." % len(specs), agent=True)
     run.emit("sandbox_phase", count=len(specs))
     out = sandbox_routes.run_route_phase(run.id, ctx, candidates, specs)
+    failed = [r for r in out["results"] if "error" in r]
+    if out["results"] and len(failed) == len(out["results"]):  # not "no plan fits": the sandboxes broke
+        raise RuntimeError("every route sandbox failed: %s" % failed[0]["error"][-120:])
     # Timings come back as offsets from the controller's start; place them on our clock.
     t_base = time.time() - out["timing"]["total_s"]
     tm = out["timing"]
@@ -672,6 +688,8 @@ def limits_view(ctx, req):
                                                      (ctx.get("conditions") or {}).get("sunset", "?"))))
     if food_wish(req):
         rows.append(("Food", food_wish(req)))
+    if routes.goal_text({"request": req}):
+        rows.append(("Goal", "%s (yours; loops in a park added if needed)" % routes.goal_text({"request": req})))
     if lim:
         rows.append(("Walking", "up to %g km in total, at %g km/h" % (lim["max_km"], lim["pace_kmh"])))
         rows.append(("Hills", "wanted" if lim.get("prefer_hills") else

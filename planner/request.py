@@ -76,6 +76,45 @@ STOP_WORDS = (r"(?:[,;:!?]|(?<!\bSt)(?<!\bMt)(?<!\bAve)(?<!\bDr)\.(?:\s|$)|"
               r"\s+(?:and|with|at|in|start(?:ing)?|walk(?:ing)?|visit(?:ing)?|from|on)\b|$)")
 
 
+# Fitness goals for the person asking: "burn at least 300 calories", "10,000 steps", "walk at least 5 km".
+GOAL_KCAL = r"\b(?:burn|burning|use up)\b[^.!?]{0,30}?(\d[\d,]*)\s*(?:k?cal(?:ories)?|kcals?)\b|\b(\d[\d,]*)\s*(?:k?cal(?:ories)?|kcals?)\b"
+GOAL_STEPS = r"\b(\d[\d,]*|\d+(?:\.\d+)?\s*k)\s*steps\b"
+GOAL_KM = (r"\b(?:walk|walking|hike|cover)\s+(?:at least|a minimum of|no less than|more than|over|minimum)\s+"
+           r"(\d+(?:\.\d+)?)\s*(km|kilomet\w*|mi\b|miles?)")
+
+
+def _num(s):
+    s = s.replace(",", "").strip().lower()
+    return float(s[:-1]) * 1000 if s.endswith("k") else float(s)
+
+
+LIMIT_BEFORE = re.compile(r"(?:\bnot|n't|\bnever|\bno more|\bat most|\bup to|\bunder|\bless than|\bmax(?:imum)?|"
+                          r"\blimit|\bfewer than)\b[^.!?,;]{0,15}$")  # in the same clause
+
+
+def _goal(rx, low):
+    """The first match of a goal pattern that isn't a limit ("must not walk more than 3 km",
+    "don't walk more than 2 miles", "no more than 10,000 steps", "at most 300 calories")."""
+    for m in re.finditer(rx, low):
+        if not LIMIT_BEFORE.search(low[max(0, m.start() - 30):m.start()]):
+            return m
+    return None
+
+
+def goals(text):
+    """{"min_kcal", "min_steps", "min_walk_km"} the message asks for (None when not asked)."""
+    low = text.lower()
+    m = _goal(GOAL_KCAL, low)
+    kcal = _num(m.group(1) or m.group(2)) if m else None
+    m = _goal(GOAL_STEPS, low)
+    steps = _num(m.group(1).replace(" ", "")) if m else None
+    m = _goal(GOAL_KM, low)
+    km = (round(float(m.group(1)) * 1.609, 2) if m.group(2).startswith("mi") else float(m.group(1))) if m else None
+    return {"min_kcal": kcal if kcal and 20 <= kcal <= 3000 else None,
+            "min_steps": steps if steps and 500 <= steps <= 60000 else None,
+            "min_walk_km": km if km and 0.2 <= km <= 40 else None}
+
+
 def read_clock(text):
     """A reply to "What time should we start?": "10am", "9:30", "2 pm", "noon", "at 10" -> minutes
     after midnight, or None. A bare hour is the morning from 7 to 11, the afternoon from 12 to 6."""
@@ -202,8 +241,11 @@ def parse(text):
         "cuisines": [c for w, c in CUISINES.items() if re.search(r"\b(%s)\b" % w, low)],
         "food_truck": bool(re.search(FOOD_TRUCK, low)),
         "outdoor_seating": bool(re.search(OUTDOOR_SEATING, low)),
-        "return_to_start": bool(re.search(RETURN_TO_START, low)),
+        "return_to_start": bool(re.search(RETURN_TO_START, low)) or bool(
+            start_place and re.search(r"\b(?:get|go|come|head|walk|be|end(?: up)?)\s+back(?:\s+again)?\s+(?:at|to)\s+(?:the\s+)?"
+                                      + re.escape(start_place.lower()[:14]), low)),
         "max_walk_km": max_walk_km,
+        **goals(text),
         "avoid_hills": bool(re.search(AVOID_HILLS, low)),
         "prefer_hills": bool(re.search(PREFER_HILLS, low)) and not re.search(AVOID_HILLS, low),
         "categories": categories,
