@@ -895,7 +895,8 @@ class NamesLimitsTests(unittest.TestCase):
         self.assertIn("Biscuit", rows["Dog"])
         self.assertIn("low tolerance", rows["Street crime"])
         with tempfile.TemporaryDirectory() as d, mock.patch.object(planner, "DATA", d):
-            saved = json.load(open(planner.save_outing(run, req, plans)))
+            with open(planner.save_outing(run, req, plans), encoding="utf-8") as f:
+                saved = json.load(f)
         self.assertEqual(saved["request"], req["text"])
         self.assertEqual([r["name"] for r in saved["routes"]], names)
         self.assertEqual(saved["limits"][0]["label"], "Day")
@@ -1035,6 +1036,91 @@ class StartAndStrollTests(unittest.TestCase):
         self.assertIn("noisy", v["tags"])
         self.assertNotIn("hours unconfirmed", v["tags"])
         self.assertIn("web search", source)
+
+
+class WeatherSourceTests(unittest.TestCase):
+    """X: the forecast keeps working when a weather service doesn't answer."""
+
+    PDX = {"lat": 45.52, "lon": -122.68}
+    WX = {"sunset": "16:31", "utc_offset_min": -480, "source": "US National Weather Service",
+          "hourly": {"12": {"all": {"temp_c": 8, "wind_kmh": 14, "fog": False, "rain_pct": 60}}}}
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        from planner import places
+        self.places = places
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        for p in (mock.patch.object(places, "CACHE_FILE", os.path.join(d, "cache.json")),):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def sources(self, *fns):
+        from unittest import mock
+        p = mock.patch.object(self.places, "WEATHER_SOURCES", tuple(("S%d" % i, f) for i, f in enumerate(fns)))
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def down(center, date):
+        raise TimeoutError("Operation timed out")
+
+    def test_X1_second_source_when_first_times_out(self):
+        self.sources(self.down, lambda c, d: dict(self.WX))
+        wx = self.places.conditions(self.PDX, "Saturday")
+        self.assertEqual(wx["source"], "US National Weather Service")
+        self.assertEqual(wx["day"], "Saturday")
+
+    def test_X2_last_saved_forecast_when_all_are_down(self):
+        self.sources(lambda c, d: dict(self.WX))
+        self.places.conditions(self.PDX, "Saturday")
+        with open(self.places.CACHE_FILE) as f:
+            cache = json.load(f)
+        for v in cache.values():
+            v["at"] -= 5 * 3600  # older than "fresh", so the services are asked first
+        with open(self.places.CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+        self.sources(self.down, self.down)
+        wx = self.places.conditions(self.PDX, "Saturday")
+        self.assertEqual(wx["hourly"], self.WX["hourly"])
+        self.assertEqual(wx["stale"], "saved 5 h ago")
+
+    def test_X3_nothing_at_all_raises_and_fallback_has_a_real_sunset(self):
+        self.sources(self.down, self.down)
+        with self.assertRaises(self.places.WeatherUnavailable):
+            self.places.conditions(self.PDX, "Saturday")
+        import datetime
+        self.assertEqual(self.places.sunset_local(45.52, -122.68, datetime.date(2026, 11, 28), -480), "16:31")
+        fb = self.places.fallback_conditions(self.PDX, "Saturday")
+        self.assertTrue(fb["estimated"])
+        self.assertRegex(fb["sunset"], r"^1[5-7]:\d\d$")
+        self.assertIsNone(planner.weather_brief(fb, request.parse("Plan Saturday in Portland"), "Portland"))
+
+    def test_X4_brief_says_rain_and_where_it_came_from(self):
+        wx = dict(self.WX, stale="saved 5 h ago")
+        brief = planner.weather_brief(wx, {"day": "Saturday", "start_min": 600, "end_min": 900}, "Portland")
+        self.assertEqual(brief, "🌧️ Weather for Saturday in Portland: 8°C, wind up to 14 km/h, no fog, "
+                                "rain likely (60%). 🌅 Sunset 16:31. (US National Weather Service, saved 5 h ago)")
+
+
+class HousekeepingTests(unittest.TestCase):
+    """X: data/ keeps only the newest outings and test runs."""
+
+    def test_X5_prune_keeps_newest_and_the_current_run(self):
+        import tempfile
+        import time
+        from planner import housekeeping
+        with tempfile.TemporaryDirectory() as d:
+            now = time.time()
+            for i in range(6):
+                os.makedirs(os.path.join(d, "outing-%d" % i))
+                os.utime(os.path.join(d, "outing-%d" % i), (now - 100 + i, now - 100 + i))
+            open(os.path.join(d, "outing-file"), "w").close()  # not a folder: left alone
+            os.makedirs(os.path.join(d, "saved"))  # another prefix: left alone
+            gone = housekeeping.prune(d, "outing-", 2, spare=("outing-0",))
+            self.assertEqual(sorted(gone), ["outing-1", "outing-2", "outing-3"])
+            self.assertEqual(sorted(os.listdir(d)), ["outing-0", "outing-4", "outing-5", "outing-file", "saved"])
 
 
 if __name__ == "__main__":

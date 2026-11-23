@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from . import crime, decide, fitness, places, present, routes, search, streets
+from . import crime, decide, fitness, housekeeping, places, present, routes, search, streets
 from . import request as request_mod
 from .disk import OutingDisk
 
@@ -216,6 +216,8 @@ def understood(req, start, city):
 
 def weather_brief(conditions, req, city):
     """One short line from the forecast for the hours of the outing."""
+    if (conditions or {}).get("estimated"):
+        return None  # already said: no forecast, mild weather assumed
     hourly = (conditions or {}).get("hourly") or {}
     first = req["start_min"] // 60
     last = (req["end_min"] // 60) if req.get("end_min") else max(first + 6, int(conditions["sunset"][:2]))
@@ -227,10 +229,17 @@ def weather_brief(conditions, req, city):
     lo, hi = min(h["temp_c"] for h in hours), max(h["temp_c"] for h in hours)
     wind = max(h["wind_kmh"] for h in hours)
     fog = any(h.get("fog") for h in hours)
-    sky = "🌫️" if fog else "💨" if wind >= 30 else "🌤️"
+    rain = max((h["rain_pct"] for h in hours if h.get("rain_pct") is not None), default=None)
+    sky = "🌧️" if (rain or 0) >= 50 else "🌫️" if fog else "💨" if wind >= 30 else "🌤️"
     temps = "%d°C" % round(hi) if round(lo) == round(hi) else "%d–%d°C" % (round(lo), round(hi))
-    return "%s Weather for %s in %s: %s, wind up to %d km/h%s. 🌅 Sunset %s." % (
-        sky, req["day"], city, temps, round(wind), ", fog likely" if fog else ", no fog", conditions["sunset"])
+    wet = ("" if rain is None else ", rain likely (%d%%)" % rain if rain >= 50
+           else ", chance of rain (%d%%)" % rain if rain >= 20 else ", dry")
+    src = conditions.get("source")
+    src = (" (%s, %s)" % (src, conditions["stale"]) if conditions.get("stale")
+           else " (%s)" % src if src and src != "Open-Meteo" else "")
+    return "%s Weather for %s in %s: %s, wind up to %d km/h%s%s. 🌅 Sunset %s.%s" % (
+        sky, req["day"], city, temps, round(wind), ", fog likely" if fog else ", no fog", wet,
+        conditions["sunset"], src)
 
 
 def plan(run, text, confirmed=True):
@@ -250,6 +259,8 @@ def plan(run, text, confirmed=True):
         return
     root = os.path.join(DATA, "outing-" + run.id)
     shutil.rmtree(root, ignore_errors=True)
+    # Only the newest outings stay on disk (the one starting now always does).
+    housekeeping.prune(DATA, "outing-", housekeeping.KEEP_OUTINGS - 1, spare=("outing-" + run.id,))
     disk = OutingDisk(root, run.emit)
     run.emit("backend", name=disk.backend.name + (" · routes: one Archil sandbox each"
                                                   if os.environ.get("PLANNER_ROUTES") == "sandboxes" else ""),
@@ -271,8 +282,11 @@ def plan(run, text, confirmed=True):
         try:
             conditions = places.conditions(start, req["day"])
         except Exception as e:
-            run.say("me", "No weather forecast available (%s); assuming mild weather." % str(e)[:60], agent=True)
-            conditions = {"sunset": "17:00", "hourly": {"12": {"all": {"temp_c": 16, "wind_kmh": 10, "fog": False}}}}
+            print("weather: %s" % e)  # the details go to the server log, not the chat
+            conditions = places.fallback_conditions(start, req["day"])
+            run.say("me", "⚠️ No weather service answered, so I'm planning for mild weather (about 16°C, "
+                          "light wind). Sunset is around %s. Check the forecast before you go."
+                    % conditions["sunset"], agent=True)
     # The map moves to the start now, before any route is planned.
     run.emit("place", city=city, start=start["name"], lat=start["lat"], lon=start["lon"],
              sunset=(conditions or routes.load_conditions())["sunset"], date=(conditions or {}).get("date"))

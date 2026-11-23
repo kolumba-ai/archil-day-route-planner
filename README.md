@@ -72,6 +72,10 @@ python3 server.py       # then open http://localhost:8765
 | `ANTHROPIC_API_KEY` | Claude Haiku 5.5 reads chat text: the request, the start reply, plan picks like "the second one"; every field is checked, the rules fill gaps. Also Claude web search (Opus 5.5) for the start place and for venues in every city: current hours, closures, dog rules, gluten-free options; the map only gives coordinates |
 | `OPENAI_API_KEY` | OpenAI (`OPENAI_MODEL`, default `gpt-5.4-mini`) reads chat text when there is no Anthropic key |
 | `OVERPASS_CH_KEY` | Find venues (by cuisine, food trucks) and geocode starts with overpass.ch |
+| `PLANNER_KEEP_OUTINGS` | How many `data/outing-*` folders to keep (default 20); older ones are deleted when a plan starts |
+| `PLANNER_KEEP_TEST_RUNS` | How many `data/test-runs/*` folders to keep (default 10) |
+
+The weather comes from Open-Meteo, with retries. If Open-Meteo doesn't answer, it comes from the US National Weather Service (US places only). If neither answers, the last forecast saved for that place and day is used. Only when all three fail does the plan assume mild weather, and the sunset is still calculated for the place and day.
 
 ## Tests
 

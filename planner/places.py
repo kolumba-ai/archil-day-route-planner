@@ -4,7 +4,8 @@
 - find_venues(): OpenStreetMap Overpass, for cafes, parks, museums, food and beaches near the start,
   with opening hours, dog rules and vegetarian options when OpenStreetMap has them.
 - elevations(): Open-Meteo elevation, so hills come from real terrain.
-- conditions(): Open-Meteo forecast for that day: temperature, wind, fog (low visibility), sunset.
+- conditions(): the forecast for that day (Open-Meteo, else the US National Weather Service,
+  else the last one saved): temperature, wind, fog, chance of rain, sunset.
 
 Only public place names and coordinates are sent. Results are cached in data/places-cache.json.
 """
@@ -760,27 +761,152 @@ def next_date(day_name, today=None):
     return today + datetime.timedelta(days=ahead)
 
 
-def conditions(center, day_name):
-    """Hourly weather and sunset for the requested day, shaped like conditions.json."""
-    date = next_date(day_name).isoformat()
+class WeatherUnavailable(Exception):
+    """No weather service answered and nothing was cached for that place and day."""
 
-    def fetch():
-        url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode({
-            "latitude": "%.4f" % center["lat"], "longitude": "%.4f" % center["lon"],
-            "hourly": "temperature_2m,wind_speed_10m,visibility", "daily": "sunset",
-            "timezone": "auto", "start_date": date, "end_date": date})
-        return _http(url)
 
-    d = _cached("wx:%.2f,%.2f:%s" % (center["lat"], center["lon"], date), fetch, ttl=3 * 3600)
-    hourly = {}
+WX_FRESH = 3 * 3600  # a forecast younger than this is used without asking again
+
+
+def _http_retry(url, tries=3, timeout=8, extra_headers=None):
+    """GET JSON with short timeouts and a few tries; the last try goes through curl, whose
+    network stack sometimes gets through when Python's times out. 4xx answers don't retry."""
+    last = None
+    for i in range(tries):
+        try:
+            if i == tries - 1 and i > 0:
+                cmd = ["curl", "-s", "-f", "-L", "-m", str(timeout), "-H", "User-Agent: " + UA]
+                for k, v in (extra_headers or {}).items():
+                    cmd += ["-H", "%s: %s" % (k, v)]
+                out = subprocess.run(cmd + [url], capture_output=True, text=True)
+                if out.returncode:
+                    raise RuntimeError("curl failed (%d)" % out.returncode)
+                return json.loads(out.stdout)
+            return _http(url, timeout=timeout, extra_headers=extra_headers)
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise
+            last = e
+        except Exception as e:  # timeouts, refused connections, bad JSON
+            last = e
+        time.sleep(0.5 * (i + 1))
+    raise last
+
+
+def sunset_utc_minutes(lat, lon, date):
+    """Sunset in minutes after UTC midnight for that date (NOAA's solar equations, good to
+    a minute or two), or None where the sun doesn't set or rise that day."""
+    g = 2 * math.pi / 365 * (date.timetuple().tm_yday - 1 + 0.25)
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
+                       - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))
+    decl = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g)
+            + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    la = math.radians(lat)
+    cos_ha = (math.cos(math.radians(90.833)) / (math.cos(la) * math.cos(decl))
+              - math.tan(la) * math.tan(decl))
+    if not -1 <= cos_ha <= 1:
+        return None
+    return 720 - 4 * (lon - math.degrees(math.acos(cos_ha))) - eqtime
+
+
+def sunset_local(lat, lon, date, utc_offset_min):
+    """Sunset as "HH:MM" local time, given the place's offset from UTC that day."""
+    m = sunset_utc_minutes(lat, lon, date)
+    if m is None:
+        return "17:00"
+    m = round(m + utc_offset_min) % (24 * 60)
+    return "%02d:%02d" % (m // 60, m % 60)
+
+
+def _open_meteo(center, date):
+    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode({
+        "latitude": "%.4f" % center["lat"], "longitude": "%.4f" % center["lon"],
+        "hourly": "temperature_2m,wind_speed_10m,visibility,precipitation_probability", "daily": "sunset",
+        "timezone": "auto", "start_date": date.isoformat(), "end_date": date.isoformat()})
+    d = _http_retry(url)
     h = d["hourly"]
+    rain = h.get("precipitation_probability") or [None] * len(h["time"])
+    hourly = {}
     for i, t in enumerate(h["time"]):
-        hour = int(t[11:13])
         vis = h["visibility"][i]
-        hourly[str(hour)] = {"all": {"temp_c": round(h["temperature_2m"][i] or 0), "wind_kmh": round(h["wind_speed_10m"][i] or 0),
-                                     "fog": vis is not None and vis < 1000}}
-    return {"day": day_name, "date": date, "sunset": d["daily"]["sunset"][0][11:16], "hourly": hourly,
-            "source": "Open-Meteo forecast"}
+        hourly[str(int(t[11:13]))] = {"all": {
+            "temp_c": round(h["temperature_2m"][i] or 0), "wind_kmh": round(h["wind_speed_10m"][i] or 0),
+            "fog": vis is not None and vis < 1000, "rain_pct": rain[i]}}
+    return {"sunset": d["daily"]["sunset"][0][11:16], "hourly": hourly,
+            "utc_offset_min": d.get("utc_offset_seconds", 0) // 60, "source": "Open-Meteo"}
+
+
+def _nws(center, date):
+    """The US National Weather Service hourly forecast (US places only, about 7 days ahead)."""
+    lat, lon = round(center["lat"], 4), round(center["lon"], 4)
+    pt = _cached("nws:%.4f,%.4f" % (lat, lon), lambda: _http_retry(
+        "https://api.weather.gov/points/%s,%s" % (lat, lon), tries=2, timeout=10)["properties"],
+        ttl=30 * 24 * 3600)
+    periods = _http_retry(pt["forecastHourly"], tries=2, timeout=12)["properties"]["periods"]
+    hourly, offset = {}, None
+    for p in periods:
+        t = datetime.datetime.fromisoformat(p["startTime"])
+        if t.date() != date:
+            continue
+        offset = int(t.utcoffset().total_seconds() // 60)
+        temp = p["temperature"] if p.get("temperatureUnit") == "C" else (p["temperature"] - 32) * 5 / 9
+        mph = [int(x) for x in re.findall(r"\d+", p.get("windSpeed") or "")] or [0]
+        sky = (p.get("shortForecast") or "").lower()
+        hourly[str(t.hour)] = {"all": {
+            "temp_c": round(temp), "wind_kmh": round(max(mph) * 1.609), "fog": "fog" in sky,
+            "rain_pct": (p.get("probabilityOfPrecipitation") or {}).get("value")}}
+    if not hourly:
+        return None  # that day is past the end of the forecast
+    return {"sunset": sunset_local(center["lat"], center["lon"], date, offset), "hourly": hourly,
+            "utc_offset_min": offset, "source": "US National Weather Service"}
+
+
+WEATHER_SOURCES = (("Open-Meteo", _open_meteo), ("US National Weather Service", _nws))
+
+
+def conditions(center, day_name):
+    """Hourly weather and sunset for the requested day, shaped like conditions.json.
+
+    Tries Open-Meteo, then the US National Weather Service, then the last forecast saved
+    for that place and day, however old. Raises WeatherUnavailable if all of them fail.
+    """
+    date = next_date(day_name)
+    key = "wx2:%.2f,%.2f:%s" % (center["lat"], center["lon"], date.isoformat())
+    with _lock:
+        try:
+            with open(CACHE_FILE) as f:
+                hit = json.load(f).get(key)
+        except (OSError, ValueError):
+            hit = None
+    if hit and time.time() - hit["at"] < WX_FRESH:
+        return dict(hit["value"], day=day_name, date=date.isoformat())
+    errors = []
+    for name, fetch in WEATHER_SOURCES:
+        try:
+            wx = fetch(center, date)
+        except Exception as e:
+            errors.append("%s: %s" % (name, str(e)[:60] or type(e).__name__))
+            continue
+        if wx:
+            _cached(key, lambda: wx, ttl=0)  # store it as the newest forecast
+            return dict(wx, day=day_name, date=date.isoformat())
+        errors.append("%s: no forecast for that day" % name)
+    if hit:
+        hours = (time.time() - hit["at"]) / 3600
+        return dict(hit["value"], day=day_name, date=date.isoformat(),
+                    stale="saved %s ago" % ("%d h" % hours if hours < 48 else "%d days" % (hours / 24)))
+    raise WeatherUnavailable("; ".join(errors))
+
+
+def fallback_conditions(center, day_name):
+    """Mild weather, with the sunset still worked out for the place and day. The UTC offset is
+    guessed from the longitude, so the time can be an hour off where it differs."""
+    date = next_date(day_name)
+    offset = round(center["lon"] / 15) * 60
+    return {"day": day_name, "date": date.isoformat(), "estimated": True,
+            "sunset": sunset_local(center["lat"], center["lon"], date, offset),
+            "hourly": {"12": {"all": {"temp_c": 16, "wind_kmh": 10, "fog": False, "rain_pct": None}}},
+            "source": "no forecast (mild weather assumed)"}
 
 
 # ---------------------------------------------------------------- strolls

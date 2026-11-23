@@ -22,6 +22,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
+from planner import housekeeping
 from planner.disk import ArchilBackend, LocalCowBackend, _clone_tree, _dir_bytes
 from tests.scenarios import SCENARIOS
 
@@ -118,6 +119,8 @@ def main():
         root = os.path.join(disk.mount, "reports", run_id)
     else:
         root = os.path.join(ROOT, "data", "test-runs", run_id)
+        # Only the newest test runs stay on disk (this one always does).
+        housekeeping.prune(os.path.dirname(root), "", housekeeping.KEEP_TEST_RUNS - 1, spare=(run_id,))
         disk = LocalCowBackend(root)
     os.makedirs(root, exist_ok=True)
     print("Disk: %s · run %s" % (disk.name, run_id))
