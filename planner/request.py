@@ -54,6 +54,14 @@ CUISINES = {
     "greek": "greek", "french": "french", "ethiopian": "ethiopian", "seafood": "seafood",
 }
 FOOD_TRUCK = r"\b(food (trucks?|carts?|pods?)|street food)\b"
+# Eating outside: a patio, sidewalk tables, open-air seating. Food carts and pods count too
+# (they come with outdoor tables), so they satisfy it without being asked for by name.
+OUTDOOR_SEATING = (r"\b((outdoor|outside|open[- ]air|open|street|sidewalk|patio|garden)\s+(street\s+)?"
+                   r"(seating|seats?|tables?|dining)|patios?|al fresco|eat(ing)? (outside|outdoors)|"
+                   r"sit(ting)? outside|beer gardens?)\b")
+# "then another park", "a second coffee", "two parks": the same kind of stop again.
+REPEAT_BEFORE = re.compile(r"\b(another|second|one more|a different|other)\s+(?:\w+\s+)?$")
+TWO_BEFORE = re.compile(r"\b(two|2)\s+(?:\w+\s+)?$")
 RETURN_TO_START = (r"\b(back (at|to) (the )?(place of departure|start(ing point)?|church|where we (started|began))|"
                    r"return(ing)? to (the )?(start|starting point|place of departure)|round[- ]trip|loop back)\b")
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -110,7 +118,9 @@ def parse(text):
     city = None
     m = re.search(r"\bin\s+((?:[A-Z][\w.'-]*\s?)+(?:,\s*[A-Z][\w.'-]*)?)", text)
     if m:
-        city = re.sub(r"\s+(Start|Starting|Walk|With|And)$", "", m.group(1).strip(" ,."))
+        # "Portland OR. Visit a park" -> "Portland OR", but "St. Louis" stays whole
+        city = re.split(r"(?<!\bSt)(?<!\bMt)(?<!\bFt)\.\s", m.group(1))[0]
+        city = re.sub(r"\s+(Start|Starting|Walk|With|And)$", "", city.strip(" ,."))
     if not city:  # a street address with its city: "4055 SE Salmon St, Portland OR 97214"
         m = re.search(r",\s*((?:[A-Z][a-z][\w.'-]*\s?)+?),?\s+([A-Z][A-Za-z])\b\.?(?:\s*\d{5}(?:-\d{4})?)?\s*(?:[.!?]|$)", text)
         if m:
@@ -134,9 +144,17 @@ def parse(text):
             stops_text = stops_text.replace(name.lower(), " ")
     found = []
     for cat, rx in CATEGORIES:
-        m = re.search(rx, stops_text)
-        if m:
-            found.append((m.start(), cat))
+        if cat == "food":  # "Thai", "sushi", "pizza" ask for food too
+            rx = r"%s|\b(%s)\b" % (rx, "|".join(CUISINES))
+        ms = list(re.finditer(rx, stops_text))
+        if not ms:
+            continue
+        found.append((ms[0].start(), cat))
+        if TWO_BEFORE.search(stops_text[max(0, ms[0].start() - 25):ms[0].start()]):
+            found.append((ms[0].start() + 0.5, cat))  # "two parks"
+        for m in ms[1:]:  # mentioned again: a second stop only when the words say so
+            if REPEAT_BEFORE.search(stops_text[max(0, m.start() - 25):m.start()]):
+                found.append((m.start(), cat))
     sunset_stop = None
     m_sun = re.search(SUNSET, stops_text)
     if m_sun:
@@ -163,6 +181,7 @@ def parse(text):
         "end_min": end_min,  # latest time to finish, or None
         "cuisines": [c for w, c in CUISINES.items() if re.search(r"\b(%s)\b" % w, low)],
         "food_truck": bool(re.search(FOOD_TRUCK, low)),
+        "outdoor_seating": bool(re.search(OUTDOOR_SEATING, low)),
         "return_to_start": bool(re.search(RETURN_TO_START, low)),
         "max_walk_km": max_walk_km,
         "avoid_hills": bool(re.search(AVOID_HILLS, low)),

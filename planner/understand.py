@@ -31,7 +31,7 @@ Rules:
 - "start_time" / "end_time": 24-hour "HH:MM". end_time is the latest time to finish ("back by 3pm", "finish no later than 3pm"). Empty string if not given.
 - "max_walk_km": the walking limit in kilometers (convert miles: x 1.609). 0 if none.
 - "day": the weekday, e.g. "Saturday". Empty string if none.
-- "stops": the kinds of places to visit, in the exact order the message names them (the day follows that order), from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park.
+- "stops": the kinds of places to visit, in the exact order the message names them (the day follows that order), from: stroll (a walk along a named street), cafe (coffee shop), park (park or garden), museum (museum or gallery), food (restaurant, lunch, burritos...), beach (beach or ocean), waterfront (riverside, waterfront, river walk, esplanade, lakefront, pier, harbor). "Riverside" is waterfront, not park. A kind asked for more than once is listed each time: "a park, then coffee, then another park" -> ["park", "cafe", "park"]; "two parks" -> ["park", "park"]. A cuisine alone ("then Thai") is a food stop.
 - "stroll_street": for "a stroll down Hawthorne Street" / "walk along Valencia", the street name as written ("Hawthorne Street"); add "stroll" to "stops" in its place. Empty string if none.
 - "stop_near": a stop the message ties to a street, neighborhood or landmark ("burritos near Hawthorne" -> {"stop": "food", "near": "Hawthorne"}; "coffee on Alberta Street" -> {"stop": "cafe", "near": "Alberta Street"}; "a park in Sellwood" -> {"stop": "park", "near": "Sellwood"}), the place as written. The stop must be in "stops". Empty if none. These are planned, so never put them in "not_supported".
 - "named_stops": a stop the message names as a specific place by its proper name (not a description like "a nice restaurant") ("then go to Mt Tabor Park" -> {"stop": "park", "name": "Mt Tabor Park"}; "lunch at Pok Pok" -> {"stop": "food", "name": "Pok Pok"}), with the stop also in "stops". Empty if none. These are planned, so never put them in "not_supported".
@@ -42,6 +42,7 @@ Rules:
 - "with_ana": true if Ana is coming. "dog": true if a dog (Biscuit) is coming.
 - "cuisines": cuisines asked for, lowercase English adjectives (e.g. "korean", "japanese", "mexican", "thai", "vegan"), including the cuisine a dish implies: burritos or tacos -> "mexican", sushi or ramen -> "japanese", pho -> "vietnamese", pad thai -> "thai", pizza -> "pizza", burgers -> "burger". Empty if none.
 - "food_truck": true if they ask for a food truck, food cart or street food.
+- "outdoor_seating": true if they want to eat or drink outside: outdoor, open, open-air, street or sidewalk seating, a patio, al fresco, sitting outside, a beer garden. A food cart pod counts as outdoor seating. This is planned, so never put it in "not_supported".
 - "return_to_start": true if they must end back where they started ("back at the place of departure by 3pm")."""
 
 SCHEMA = {
@@ -71,10 +72,11 @@ SCHEMA = {
         "dog": {"type": "boolean"},
         "cuisines": {"type": "array", "items": {"type": "string"}},
         "food_truck": {"type": "boolean"},
+        "outdoor_seating": {"type": "boolean"},
         "return_to_start": {"type": "boolean"},
     },
     "required": ["city", "start_place", "start_time", "end_time", "max_walk_km", "day", "stops",
-                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "stop_near", "named_stops", "not_supported", "cuisines", "food_truck", "return_to_start"],
+                 "avoid_hills", "prefer_hills", "with_ana", "dog", "sunset_stop", "stroll_street", "stop_near", "named_stops", "not_supported", "cuisines", "food_truck", "outdoor_seating", "return_to_start"],
     "additionalProperties": False,
 }
 
@@ -129,7 +131,7 @@ def rules_mode():
 def blank(text):
     """What a request means before the model fills anything in."""
     return {"text": text, "day": "Saturday", "city": None, "start_place": None, "start_min": 10 * 60,
-            "end_min": None, "cuisines": [], "food_truck": False, "return_to_start": False, "max_walk_km": None,
+            "end_min": None, "cuisines": [], "food_truck": False, "outdoor_seating": False, "return_to_start": False, "max_walk_km": None,
             "avoid_hills": False, "prefer_hills": False, "categories": list(rules.DEFAULT_CATEGORIES),
             "sunset_stop": None, "stroll_street": None, "stop_near": {}, "named_stops": {}, "not_supported": [], "with": [], "dog": False}
 
@@ -240,11 +242,19 @@ def merge(text, ai, base, who="claude"):
             named.setdefault(item["stop"], name)
     if named:
         take("named_stops", named)
+    outdoor = bool(ai.get("outdoor_seating")) and bool(re.search(rules.OUTDOOR_SEATING + "|" + rules.FOOD_TRUCK, text.lower()))
+    if outdoor:
+        take("outdoor_seating", True)
     covered = [_norm(w) for w in list(near.values()) + list(named.values())]
     take("not_supported", [x.strip() for x in ai.get("not_supported") or [] if x.strip()
-                           and not any(c and c in _norm(x) for c in covered)][:5])  # planned after all
+                           and not any(c and c in _norm(x) for c in covered)
+                           and not (outdoor and re.search(rules.OUTDOOR_SEATING + r"|\bseat", x.lower()))][:5])
     if stops:
-        take("categories", list(dict.fromkeys(stops)))
+        # The same kind twice ("then another park") only when the message says so; otherwise
+        # a repeat is the model listing one stop twice ("burritos for lunch").
+        if not re.search(r"\b(another|second|one more|a different|other|two|both|again)\b", text.lower()):
+            stops = list(dict.fromkeys(stops))
+        take("categories", stops[:6])
         sun = ai.get("sunset_stop") or ""
         if sun in out["categories"]:
             take("sunset_stop", sun)

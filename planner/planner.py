@@ -168,7 +168,10 @@ def place_name(p):
     return re.sub(r"^Start \((.*)\)$", r"\1", p.get("name", ""))
 
 
-def stop_label(c, req):
+def stop_label(c, req, again=False):
+    """How a stop reads to people. `again` is a second stop of the same kind ("another park")."""
+    if again:
+        return {"cafe": "more coffee", "food": "more food"}.get(c, "another " + request_mod.LABELS.get(c, c).split()[-1])
     if c == "stroll" and req.get("stroll_street"):
         return "a stroll along %s" % req["stroll_street"]
     label = request_mod.LABELS.get(c, c)
@@ -178,23 +181,38 @@ def stop_label(c, req):
     return "%s near %s" % (label, near) if near else label
 
 
+def stop_labels(req):
+    """Each stop's label in order; a repeat reads "another park", and only the last stop of the
+    sunset kind is the sunset stop."""
+    cats = req["categories"]
+    sun = max((i for i, c in enumerate(cats) if c == req.get("sunset_stop")), default=None)
+    return [(c, stop_label(c, req, again=c in cats[:i]), i == sun) for i, c in enumerate(cats)]
+
+
+def food_wish(req):
+    """ "Thai food from a food truck, with outdoor seating" (or "" when nothing was asked)."""
+    bits = []
+    if req.get("cuisines"):
+        bits.append(" or ".join(c.capitalize() for c in req["cuisines"]) + " food")
+    if req.get("food_truck"):
+        bits.append("from a food truck")
+    if req.get("outdoor_seating"):
+        bits.append("with outdoor seating (a patio, sidewalk tables or a food cart pod)")
+    return " ".join(bits)
+
+
 def understood(req, start, city):
     """What the agent understood, for the person to confirm before anyone else is contacted."""
-    stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), stop_label(c, req),
-                                     " at sunset 🌅" if c == req.get("sunset_stop") else "")
-                       for c in req["categories"])
-    food = []
-    if req.get("cuisines"):
-        food.append(" or ".join(c.capitalize() for c in req["cuisines"]) + " food")
-    if req.get("food_truck"):
-        food.append("from a food truck")
+    stops = " → ".join("%s %s%s" % (ICONS.get(c, "📍"), label, " at sunset 🌅" if sun else "")
+                       for c, label, sun in stop_labels(req))
+    food = food_wish(req)
     lines = ["Here's what I understood:",
              "📅 %s, %s" % (req["day"], city),
              "📍 Start: %s%s at %s" % (place_name(start), ", " + start["address"] if start.get("address") else "",
                                       routes.hhmm(req["start_min"])),
              "🗺️ " + stops]
     if food:
-        lines.append("🍽️ " + " ".join(food))
+        lines.append("🍽️ " + food[0].upper() + food[1:])
     limits = []
     if req.get("end_min"):
         limits.append(("back at the start by %s" if req.get("return_to_start") else "done by %s")
@@ -375,8 +393,17 @@ def plan(run, text, confirmed=True):
         return cat, venues
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        candidates = dict(pool.map(search_branch, req["categories"]))
-    missing = [c for c in req["categories"] if not candidates.get(c)]
+        kinds = list(dict.fromkeys(req["categories"]))  # one search per kind, even with two parks
+        candidates = dict(pool.map(search_branch, kinds))
+    missing = [c for c in kinds if not candidates.get(c)]
+    if not missing:  # two parks need two different parks
+        short = [c for c in kinds if len(candidates[c]) < req["categories"].count(c)]
+        if short:
+            run.say("me", "I found only one %s within reach of %s, and you asked for %d. Try a longer walk."
+                    % (request_mod.LABELS.get(short[0], short[0]).split()[-1], ctx["start"]["name"],
+                       req["categories"].count(short[0])), agent=True)
+            run.emit("done", ok=False)
+            return
     if missing:
         failed = sorted({e["source"] for e in run.events if e["type"] == "search_done"
                          and e["source"].startswith("search failed")})
@@ -633,13 +660,12 @@ def limits_view(ctx, req):
                      % routes.hhmm(req["end_min"])))
     elif req.get("return_to_start"):
         rows.append(("Finish", "back at the start"))
-    rows.append(("Stops", " → ".join(stop_label(c, req) for c in req["categories"])))
+    rows.append(("Stops", " → ".join(label for _, label, _ in stop_labels(req))))
     if req.get("sunset_stop"):
         rows.append(("At sunset", "%s (sunset %s)" % (request_mod.LABELS.get(req["sunset_stop"], req["sunset_stop"]),
                                                      (ctx.get("conditions") or {}).get("sunset", "?"))))
-    if req.get("cuisines") or req.get("food_truck"):
-        rows.append(("Food", " ".join(filter(None, [" or ".join(c.capitalize() for c in req.get("cuisines") or []),
-                                                     "from a food truck" if req.get("food_truck") else ""]))))
+    if food_wish(req):
+        rows.append(("Food", food_wish(req)))
     if lim:
         rows.append(("Walking", "up to %g km in total, at %g km/h" % (lim["max_km"], lim["pace_kmh"])))
         rows.append(("Hills", "wanted" if lim.get("prefer_hills") else

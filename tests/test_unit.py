@@ -1038,6 +1038,74 @@ class StartAndStrollTests(unittest.TestCase):
         self.assertIn("web search", source)
 
 
+TWO_PARKS = ("Plan Saturday with Ana and Biscuit starting from St Stephen's Catholic Church in Portland OR. "
+             "Visit a park, then coffee, then another park, then Thai with open street seating.")
+
+
+class TwoParksOutdoorSeatingTests(unittest.TestCase):
+    """Y: the same kind of stop twice ("then another park"), and eating outside."""
+
+    def test_Y1_reads_two_parks_thai_and_outdoor_seating(self):
+        r = request.parse(TWO_PARKS)
+        self.assertEqual(r["categories"], ["park", "cafe", "park", "food"])
+        self.assertEqual(r["city"], "Portland OR")
+        self.assertEqual(r["start_place"], "St Stephen's Catholic Church")
+        self.assertEqual(r["cuisines"], ["thai"])
+        self.assertTrue(r["outdoor_seating"])
+        self.assertFalse(r["food_truck"])
+        for text in ("lunch on a patio", "sidewalk tables please", "we want to eat outside", "outdoor seating"):
+            self.assertTrue(request.parse("coffee, then " + text)["outdoor_seating"], text)
+        self.assertFalse(request.parse("coffee and a park")["outdoor_seating"])
+        # A word said twice is one stop unless the words ask for another one.
+        self.assertEqual(request.parse("burritos for lunch, then a park")["categories"], ["food", "park"])
+        self.assertEqual(request.parse("visit two parks and coffee")["categories"], ["park", "park", "cafe"])
+        self.assertEqual(request.parse("Plan a day in St. Louis: coffee")["city"], "St. Louis")
+
+    def test_Y2_confirmation_shows_both_parks_and_outdoor_seating(self):
+        said = planner.understood(request.parse(TWO_PARKS), {"name": "Saint Stephen Catholic Church", "lat": 45.5,
+                                                             "lon": -122.6}, "Portland OR")
+        self.assertIn("🌳 a park → ☕ coffee → 🌳 another park → 🌯 food", said)
+        self.assertIn("Thai food with outdoor seating", said)
+        self.assertNotIn("can't plan", said)
+
+    def test_Y3_model_answers_are_checked(self):
+        from planner import understand
+        ai = {"stops": ["park", "cafe", "park", "food"], "cuisines": ["thai"], "outdoor_seating": True,
+              "not_supported": ["open street seating"]}
+        r = understand.merge(TWO_PARKS, ai, understand.blank(TWO_PARKS))
+        self.assertEqual(r["categories"], ["park", "cafe", "park", "food"])
+        self.assertTrue(r["outdoor_seating"])
+        self.assertEqual(r["not_supported"], [])  # planned, so not "left out"
+        # No "another", "second" or "two" in the message: a repeat is the model listing one stop twice.
+        text = "Plan Saturday in Portland: burritos for lunch, then a park"
+        r = understand.merge(text, {"stops": ["food", "food", "park"], "outdoor_seating": True}, understand.blank(text))
+        self.assertEqual(r["categories"], ["food", "park"])
+        self.assertFalse(r["outdoor_seating"])  # nothing in the message asks to sit outside
+
+    def test_Y4_plans_visit_two_different_parks_and_eat_outside(self):
+        town = dict(TOWN, food=[
+            {"name": "Thai Indoors", "lat": 45.5010, "lon": -122.6010, "open": "11:00", "close": "21:00",
+             "dogs": "patio", "vegetarian_ok": True, "tags": ["food", "thai"], "cuisine": ["thai"],
+             "outdoor_seating": False},
+            {"name": "Thai Cart", "lat": 45.5012, "lon": -122.6012, "open": "11:00", "close": "21:00",
+             "dogs": "patio", "vegetarian_ok": True, "tags": ["food", "thai"], "cuisine": ["thai"],
+             "food_truck": True}])
+        req = request.parse("Plan Saturday starting at Test Church at 9am. Visit a park, then coffee, then another "
+                            "park, then Thai with open street seating, walk at most 5 km")
+        c = routes.combine(profiles("me"), req, start=TOWN_START, conditions=TOWN_WEATHER)
+        c["elev"] = {routes.key({"lat": la, "lon": lo}): e for (la, lo), e in TOWN_ELEV.items()}
+        pool = [("b", it) for fixed in all_branches(town, c) for it in routes.route_branch(fixed, town, c)[0]]
+        plans = [it for _, it in routes.pick_diverse(pool, 3)]
+        self.assertTrue(plans)
+        for p in plans:
+            self.assertEqual([s["category"] for s in p["stops"]], ["park", "cafe", "park", "food"])
+            parks = [s["name"] for s in p["stops"] if s["category"] == "park"]
+            self.assertEqual(sorted(parks), ["Flat Park", "Hill Park"])  # two different parks
+        self.assertEqual(plans[0]["stops"][-1]["name"], "Thai Cart")  # the place you can sit outside wins
+        self.assertEqual(routes.stop_names(plans[0])["park#2"], plans[0]["stops"][2]["name"])
+        self.assertEqual(routes.orders(["park", "cafe", "park"], "park"), [("park", "cafe", "park#2")])
+
+
 class WeatherSourceTests(unittest.TestCase):
     """X: the forecast keeps working when a weather service doesn't answer."""
 

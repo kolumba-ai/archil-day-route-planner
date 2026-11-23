@@ -671,22 +671,26 @@ def _nominatim_elements(category, center, radius_m, words=None):
     return out
 
 
-def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None, food_truck=False):
+def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None, food_truck=False,
+                outdoor_seating=False):
     """Named places of one category within radius_m of center, nearest first.
     Nominatim first (fast); Overpass only if Nominatim finds nothing.
 
     For food, `cuisines` (e.g. ["korean", "japanese"]) keeps only places whose OpenStreetMap
     cuisine tag or name matches: never a stand-in from another cuisine. `food_truck` puts
-    food trucks and carts first."""
+    food trucks and carts first. `outdoor_seating` puts places you can eat outside first
+    (tagged outdoor_seating=yes, or food carts and trucks)."""
     from .routes import km
 
     words = None
-    if category == "food" and (cuisines or food_truck):
+    if category == "food" and (cuisines or food_truck or outdoor_seating):
         words = ["%s restaurant" % c for c in cuisines or []] + list(cuisines or [])
         for c in cuisines or []:  # dish and style words find places whose cuisine tag is missing
             words += [w for w in CUISINE_NAME_WORDS.get(c, []) if w not in words]
-        if food_truck:
+        if food_truck or outdoor_seating:  # carts and pods come with outdoor tables
             words += ["food truck", "food cart"] + ["%s food truck" % c for c in cuisines or []]
+        if not cuisines:
+            words += ["restaurant"]
     elements = []
     if _ch_key():  # one fast Overpass query with full tags (cuisine included) for every stop type
         try:
@@ -725,6 +729,8 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
              "gluten_free_ok": {"yes": True, "only": True, "limited": True, "no": False}.get(tags.get("diet:gluten_free")),
              "tags": [t for t in (tags.get("cuisine", "").split(";") + [category]) if t],
              "cuisine": sorted(cuisine_of(tags)), "food_truck": is_food_truck(tags),
+             "outdoor_seating": True if is_food_truck(tags) else
+                                {"yes": True, "no": False}.get(tags.get("outdoor_seating")),
              "source": "https://www.openstreetmap.org/%s/%s" % (e["type"], e["id"])}
         if category == "museum":
             v["kind"] = "museum"
@@ -732,7 +738,9 @@ def find_venues(category, center, radius_m, limit=8, day_index=5, cuisines=None,
             v["area"] = "all"
         venues.append(v)
     # Nearest first; when food trucks were asked for, trucks and carts come before restaurants.
-    venues.sort(key=lambda v: (not (food_truck and v.get("food_truck")), km(v, center)))
+    venues.sort(key=lambda v: (not (food_truck and v.get("food_truck")),
+                               {True: 0, None: 1, False: 2}[v["outdoor_seating"]] if outdoor_seating else 0,
+                               km(v, center)))
     return venues[:limit]
 
 

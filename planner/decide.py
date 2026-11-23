@@ -106,8 +106,8 @@ def by_subq(pool, ctx, n=3):
 
 # ---------------------------------------------------------------- rules
 
-def _stop(it, cat):
-    return next((s["name"] for s in it["stops"] if s["category"] == cat), None)
+def _stop(it, slot):
+    return routes.stop_names(it).get(slot)  # "park#2" is the second park
 
 
 def explain(it, first, rank, fastest=None):

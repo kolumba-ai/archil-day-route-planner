@@ -118,6 +118,10 @@ def search_city(category, context, mode):
     named = (req.get("named_stops") or {}).get(category)
     if named:  # "then go to Mt Tabor Park": that place, found on the web and placed on the map
         v = named_venue(category, named, context)
+        if v and (req.get("categories") or []).count(category) > 1:
+            # "Mt Tabor Park, then coffee, then another park": the named one plus others
+            more, source = search_city(category, dict(context, request=dict(req, named_stops={})), mode)
+            return [v] + [m for m in more if m["name"].lower() != v["name"].lower()], source
         if v:
             return [v], "Claude web search + OpenStreetMap coordinates"
         print("Couldn't find %s; searching for any %s instead" % (named, category))
@@ -139,7 +143,8 @@ def search_city(category, context, mode):
         if area:
             center, radius = area, area["radius_m"]
     venues = places.find_venues(category, center, radius, day_index=day_index,
-                                cuisines=req.get("cuisines") or None, food_truck=bool(req.get("food_truck")))
+                                cuisines=req.get("cuisines") or None, food_truck=bool(req.get("food_truck")),
+                                outdoor_seating=bool(req.get("outdoor_seating")))
     source = "OpenStreetMap"
     if venues and mode == "keenable":
         from . import keenable
@@ -238,6 +243,8 @@ def web_venues(category, context, near=None, want=8):
             asks.append("cuisine: %s" % " or ".join(req["cuisines"]))
         if req.get("food_truck"):
             asks.append("food trucks or carts")
+        if req.get("outdoor_seating"):
+            asks.append("outdoor seating: a patio, sidewalk or street tables, or a food cart pod with tables")
         diets = set(lim.get("diets") or [])
         if diets:
             asks.append("the group's diets: %s" % ", ".join(sorted(d.replace("_", "-") for d in diets)))
@@ -308,6 +315,7 @@ def web_venues(category, context, near=None, want=8):
                "tags": list(dict.fromkeys([t.lower() for t in v["tags"] + v["cuisine"]
                                            if re.fullmatch(r"[a-z_]{2,20}", t.lower())] + [category])),
                "cuisine": sorted({c.lower() for c in v["cuisine"]}), "food_truck": v["food_truck"],
+               "outdoor_seating": True if v["food_truck"] or "outdoor_seating" in v["tags"] else None,
                "source": v.get("source") or "Claude web search"}
         if category == "museum":
             out["kind"] = "museum"

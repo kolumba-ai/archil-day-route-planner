@@ -222,6 +222,16 @@ def weather_at(cond, minute, area=None):
 
 # ---------------------------------------------------------------- simulate
 
+def outdoor_seating(v):
+    """True if you can eat outside there (a patio, sidewalk tables, or a food cart or truck,
+    which come with outdoor tables), False if known not to, None if nobody says."""
+    if v.get("outdoor_seating") is not None:
+        return v["outdoor_seating"]
+    if v.get("food_truck") or "outdoor_seating" in (v.get("tags") or []):
+        return True
+    return None
+
+
 def simulate(stops, ctx):
     """stops: list of (category, venue) in visiting order. Returns an itinerary with scores."""
     lim = ctx["limits"]
@@ -277,6 +287,12 @@ def simulate(stops, ctx):
             notes.append("Couldn't check %s online; confirm its hours and dog rules" % v["name"])
         if cat == "food" and (ctx.get("request") or {}).get("food_truck") and not v.get("food_truck"):
             notes.append("No food truck fits this route; %s is a restaurant" % v["name"])
+        if cat == "food" and (ctx.get("request") or {}).get("outdoor_seating"):
+            out = outdoor_seating(v)
+            if out is False:
+                notes.append("%s has no outdoor seating" % v["name"])
+            elif out is None:
+                notes.append("Couldn't confirm outdoor seating at %s; check before you go" % v["name"])
         stop = {"category": cat, "name": v["name"], "lat": v["lat"], "lon": v["lon"],
                 "arrive": hhmm(arrive), "leave": hhmm(leave), "source": v.get("source", "")}
         if cat == "stroll":
@@ -397,6 +413,8 @@ def score_itinerary(it, stops, ctx, sunset):
                     parts.append({True: 1.0, None: 0.8}.get(v.get("gluten_free_ok"), 0.0))
                 if cat == "food" and (ctx.get("request") or {}).get("food_truck"):
                     parts.append(1.0 if v.get("food_truck") else 0.5)  # they asked for a food truck
+                if cat == "food" and (ctx.get("request") or {}).get("outdoor_seating"):
+                    parts.append({True: 1.0, None: 0.7}.get(outdoor_seating(v), 0.35))  # they want to sit outside
             elif cat == "park":
                 parts.append(0.9 if "views" in p["activities"]["likes"] else 0.8)
             elif cat in ("beach", "waterfront"):
@@ -444,8 +462,22 @@ def score_itinerary(it, stops, ctx, sunset):
 
 # ---------------------------------------------------------------- branch work
 
+def slots(categories):
+    """One key per stop, in order: ["park", "cafe", "park", "food"] -> ["park", "cafe", "park#2", "food"]."""
+    out, seen = [], {}
+    for c in categories:
+        seen[c] = seen.get(c, 0) + 1
+        out.append(c if seen[c] == 1 else "%s#%d" % (c, seen[c]))
+    return out
+
+
+def slot_category(slot):
+    return slot.split("#")[0]
+
+
 def stop_names(it):
-    return {s["category"]: s["name"] for s in it["stops"]}
+    """{slot: venue name} for a plan; a second park is "park#2"."""
+    return dict(zip(slots([s["category"] for s in it["stops"]]), (s["name"] for s in it["stops"])))
 
 
 def pick_diverse(plans, n=3, penalty=0.03):
@@ -497,22 +529,25 @@ def branch_specs(candidates, categories):
 
 
 def orders(categories, last="beach"):
-    """The order the person asked for, kept as is. The one exception is a stop they want at
-    sunset ("riverside at sunset"), which can only come last."""
-    order = [c for c in categories if c != last] + ([last] if last in categories else [])
-    return [tuple(order)]
+    """The order the person asked for, kept as is (as slots: a second park is "park#2"). The one
+    exception is a stop they want at sunset ("riverside at sunset"), which can only come last."""
+    order = slots(categories)
+    sun = [s for s in order if slot_category(s) == last][-1:]  # the last one of that kind
+    return [tuple([s for s in order if s not in sun] + sun)]
 
 
 def route_branch(fixed, candidates, ctx, keep=4):
     """Everything one route branch does. `fixed` maps the anchor stop types to the venues this
     branch owns; it tries every combination of the other stops in every sensible order."""
     cats = ctx.get("categories") or list(DEFAULT_CATEGORIES)
-    free = [c for c in cats if c not in fixed]
+    free = [s for s in slots(cats) if s not in fixed]  # the anchors are each kind's first stop
     results, dropped = [], {}
-    for combo in itertools.product(*[candidates[c] for c in free]):
+    for combo in itertools.product(*[candidates[slot_category(s)] for s in free]):
         pick = dict(fixed, **dict(zip(free, combo)))
+        if len({v["name"] for v in pick.values()}) < len(pick):
+            continue  # two parks means two different parks
         for order in orders(cats, sunset_stop(ctx)):
-            it = simulate([(c, pick[c]) for c in order], ctx)
+            it = simulate([(slot_category(s), pick[s]) for s in order], ctx)
             if it["violations"]:
                 for v in it["violations"]:
                     dropped[v] = dropped.get(v, 0) + 1
@@ -521,7 +556,8 @@ def route_branch(fixed, candidates, ctx, keep=4):
     results.sort(key=lambda r: -r["group_score"])
     best, seen = [], set()
     for r in results:  # keep the best plan per combination of the other stops, for variety
-        combo = tuple(s["name"] for s in r["stops"] if s["category"] in free)
+        names = stop_names(r)
+        combo = tuple(names.get(s) for s in free)
         if combo not in seen:
             seen.add(combo)
             best.append(r)
